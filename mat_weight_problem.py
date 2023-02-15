@@ -5,11 +5,12 @@ from poly_matrix.poly_matrix import PolyMatrix
 from meas_graph import MeasGraph
 import cvxpy as cp
 import numpy.linalg as la
+import scipy.sparse.linalg as sla
 from collections import namedtuple
 from copy import copy
 
 class Constraint:
-    def __init__(self,A : PolyMatrix,b : float ,label : str):
+    def __init__(self,A : PolyMatrix, b : float , label : str):
         self.A = A
         self.b = b
         self.label = label
@@ -36,17 +37,20 @@ class MatrixWeightedProblem:
         # Optimization parameters
         self.SDP_solvr = cp.MOSEK
         
-    # def generate_cost(self):
-    #     """
-    #     Generate cost matrix using defined list of edges. Should be defined by child class,
-    #     but depend entirely on edges of measurement graph.
-    #     """
-    
-    # def generate_constraints(self):
-    #     """
-    #     Generate the quadratic constraint matrices for the problem
-    #     Should generate both original constraints and redundant constraints (if any)
-    #     """
+    def generate_cost(self):
+        """
+        Generate cost matrix using defined list of edges. Should be defined by child class,
+        but depend entirely on edges of measurement graph.
+        """
+        raise Exception("generate_cost must be defined by child class")
+
+    def generate_constraints(self):
+        """
+        Generate the quadratic constraint matrices for the problem
+        Should generate both original constraints and redundant constraints (if any)
+        """
+        raise Exception("generate_constraints must be defined by child class")
+        
     def get_gt_soln(self, var_list=None):
         """Loop through var_list and pull ground truth values from corresponding vertices.
 
@@ -93,7 +97,7 @@ class MatrixWeightedProblem:
         Args:
             useRedun ( bool ): Test redundant constraints as well
         """
-        if len(self.constraints) is 0:
+        if len(self.constraints) == 0:
             raise Exception("No constraints to test")
         # Get solution
         x_sol = self.get_gt_soln()
@@ -101,10 +105,10 @@ class MatrixWeightedProblem:
         viol = []
         for c in self.constraints:
             A = c.A.get_matrix(variables=self.var_list)
-            viol += x_sol.T @ A @ x_sol - c.b
+            viol += [x_sol.T @ A @ x_sol - c.b]
         # Assert no violation
         check = np.abs(viol) < tol
-        assert(all(check), f"Constraints Violated: {[i for i,x in enumerate(check) if not x ]}")
+        assert all(check), f"Constraints Violated: {[i for i,x in enumerate(check) if not x ]}"
         # Redundant constraints
         if useRedun:
             # Loop through constraints
@@ -114,11 +118,11 @@ class MatrixWeightedProblem:
                 viol += x_sol.T @ A @ x_sol - c.b
             # Assert no violation
             check = np.abs(viol) < tol
-            assert(all(check), f"Redundant Constraints Violated: {[i for i,x in enumerate(check) if not x ]}")
+            assert all(check), f"Redundant Constraints Violated: {[i for i,x in enumerate(check) if not x ]}"
         
         print("Constraints Validated!")
     
-    def solve_primal_sdp(self, useRedun : bool):
+    def solve_primal_sdp(self, useRedun : bool=False, vars=None):
         """
         Solve the relaxed SDP for the original QCQP problem
 
@@ -126,25 +130,35 @@ class MatrixWeightedProblem:
             useRedun (bool): When true, enables redundant constraints to tighten
                             problem.
         """
+        # Variable list
+        if vars is None:
+            vars = self.var_list
         # Define SDP variable
-        X = cp.Variable(self.Q.shape,symmetric=True)
+        X = cp.Variable(self.Q.get_matrix(vars).shape,symmetric=True)
         # Define constraints
         #   Positive Semidefiniteness:
         constraints = [X >> 0]
         #   Primal Affine:
-        constraints += [cp.trace(self.A[i].get_matrix() @ X) == self.c[i] \
-                                                for i in range(len(self.A))]
+        assert len(self.constraints) > 0, "Constraints have not been generated."
+        constraints += [cp.trace(c.A.get_matrix(vars) @ X) == c.b \
+            for c in self.constraints]
         #   Redundant Affine:
         if useRedun:
-            constraints += [cp.trace(self.A[i].get_matrix() @ X) == self.c[i] \
-                                                for i in range(len(self.A))]
+            assert len(self.constraints_r) > 0, "Constraints have not been generated."
+            constraints += [cp.trace(c.A.get_matrix(vars) @ X) == c.b \
+                for c in self.constraints_r]
+        # Condition the cost matrix
+        Q = self.Q.get_matrix(vars)
+        q_scale = sla.norm(Q)
+        Q = Q / q_scale
         # Run CVX
-        cprob = cp.Problem(cp.Minimize(cp.trace(self.Q.get_matrix() @ X)), constraints)
+        cprob = cp.Problem(cp.Minimize(cp.trace(Q @ X)), constraints)
         cprob.solve(solver=self.SDP_solvr,verbose=True)
+
         
         return X,cprob
         
-    def round_SDP_soln(self,X):
+    def round_sdp_soln(self,X):
         """Round the SDP solution using 
 
         Args:
@@ -153,6 +167,14 @@ class MatrixWeightedProblem:
         # SVD
         U,S,V = la.svd(X)
         # Compute solution from largest singular value
-        x = U[:,0] * np.sqrt(S[0])
-        # TODO use variable encoding from 
+        x = U[:,[0]] * np.sqrt(S[0])
+        # Find homogenizing var and flip if its negative.
+        ind = 0
+        for key in self.var_list.keys():
+            if key == 'w_0':
+                break
+            else:
+                ind += self.var_list[key]
+        if x[ind] < 0:
+              x = -x      
         return x

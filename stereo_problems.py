@@ -54,8 +54,8 @@ class Localization(MatrixWeightedProblem):
                     p = v2.r_in0
                     # Define matrix
                     Q_e[C1, C1] = np.kron(p @ p.T, W)
-                    Q_e[C1, t1] = np.kron(p , W)
-                    Q_e[C1, w0] = np.kron(p, W @ y)
+                    Q_e[C1, t1] = -np.kron(p , W) 
+                    Q_e[C1, w0] = -np.kron(p, W @ y) 
                     Q_e[t1, t1] = W
                     Q_e[t1, w0] = W @ y
                     Q_e[w0, w0] = y.T @ W @ y   
@@ -72,21 +72,23 @@ class Localization(MatrixWeightedProblem):
         for v in self.G.Vp.values():
             # Get label
             C = v.label + '_C'
-            # Init constraint
-            A = PolyMatrix()
+            # Generate six orthogonality constraints           
             for i in range(3):
                 for j in range(i,3):
-                    E_ = np.zeros((3,3))
-                    E_[i,j] = 1./2.
-                    A[C,C] = E_ + E_.T
-                    A[w0,w0] = -1.
-                    self.constraints += [Constraint(A,0,"O3")]
+                    A = PolyMatrix()
+                    E = np.zeros((3,3))
+                    E[i,j] = 1./2.
+                    A[C,C] = np.kron(E + E.T, np.eye(3))
+                    if i == j:
+                        A[w0,w0] = -1.
+                    else:
+                        A[w0,w0] = 0.
+                    self.constraints += [Constraint(A,0.,"O3")]
 
         # Homogenization 
         A = PolyMatrix()
         A[w0,w0] = 1.
         self.constraints += [Constraint(A, 1., "Homog")]
-    
     
     def gauss_isotrp_meas_model(self, edgeList, sigma):
         """Generate isotropic Gaussian corrupted measurements based on a list of edges
@@ -106,5 +108,5 @@ class Localization(MatrixWeightedProblem):
             v1 = self.G.Vp[v1Lbl]
             v2 = self.G.Vm[v2Lbl]
             # Generate Measurement and add edge
-            y = v1.C_p0 @ (v2.r_in0 - v1.r_in0) + np.random.randn(3,1)
+            y = v1.C_p0 @ (v2.r_in0 - v1.r_in0) + sigma*np.random.randn(3,1)
             self.G.addEdge(v1,v2,y,W)

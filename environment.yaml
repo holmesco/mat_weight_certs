@@ -1,0 +1,26 @@
+name: mwcerts
+channels:
+    - defaults
+    - conda-forge
+    - anaconda
+
+dependencies:
+    - python=3.9
+    - pip=22.3
+
+    - numpy=1.23
+    - matplotlib=3.6
+    - jupyterlab=3.5
+    - ipynbname=2021.3
+    - scipy=1.10
+    - cvxpy
+
+    # Testing & linting
+    - pytest=7.1
+    - pytest-cov=4.0
+    - flake8=6.0
+    
+    - pip:
+        # - <some package only available on PyPI>
+        - -e .  # Build local source folder
+        - spatialmath-python

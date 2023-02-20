@@ -27,6 +27,30 @@ class MapVertex(Vertex):
         self.r_in0 = r
         # List of vertices connected to this vertex
         self.from_list = []
+        
+class Edge:
+    def __init__(self, V1, V2, meas, weight, type : str=None):
+        assert isinstance(V1, Vertex), TypeError("V1 not a Vertex")
+        assert isinstance(V2, Vertex), TypeError("V2 not a Vertex")
+        self.V_from = V1
+        self.V_to = V2
+        self.meas = {}
+        self.weight = {}
+        self.update(meas, weight, type)
+        
+    def update(self, meas, weight, type : str=None):
+        if type is None:
+            type = "trans"
+        if not (type == "trans" or type == "rot"):
+            raise TypeError("Edge type not valid")
+        if type == "trans" and not meas.shape == (3,1):
+            raise ValueError("Measurement is wrong size for translation")
+        if "rot" in type and not meas.shape == (3,3):
+            raise ValueError("Measurement is wrong size for rotation")
+        # Record values
+        self.meas[type] = meas
+        self.weight[type] = weight
+          
     
 class MeasGraph:
     """
@@ -56,19 +80,37 @@ class MeasGraph:
         # Loop through poses and define vertices
         for i in range(len(r_p_in0)):
             # Check shape
-            assert(r_p_in0[i].shape == (3,1), f"Pose translation {i} not (3,1)")
-            assert(C_p_0[i].shape == (3,3),f"Pose Rotation {i} not (3,3)")
+            assert r_p_in0[i].shape == (3,1), f"Pose translation {i} not (3,1)"
+            assert C_p_0[i].shape == (3,3), f"Pose Rotation {i} not (3,3)"
             # Add to list
             label = f'x{i}'
             self.Vp[f'x{i}'] = Vertex(label, r_p_in0[i], C_p_0[i])
         # Loop through map points and define vertices
         for i in range(len(r_m_in0)):
             # Check shape
-            assert(r_m_in0[i].shape == (3,1),f"Map translation {i} not (3,1)")
+            assert r_m_in0[i].shape == (3,1),f"Map translation {i} not (3,1)"
             label = f'm{i}'
             self.Vm[label] = MapVertex(label,r_m_in0[i])
-         
-    def addEdge(self, V_from, V_to, meas, weight):
+    
+    def find_edge_verts(self,V_from,V_to):
+        # If just strings given, convert to vertex objects
+        if type(V_from) == str:
+            if "x" in V_from:
+                V_from = self.Vp[V_from]
+            elif "m" in V_from:
+                raise TypeError("Outgoing vertex cannot be Map Vertex")
+            else:
+                raise NameError("Vertex not recognized") 
+        if type(V_to) == str:
+            if "x" in V_to:
+                V_to = self.Vp[V_to]
+            elif "m" in V_to:
+                V_to = self.Vm[V_to]
+            else:
+                raise NameError("Vertex not recognized")  
+        return (V_from, V_to)
+    
+    def add_edge(self, V_from, V_to, meas, weight, etype : str=None):
         """Add edge in measurement graph between two nodes.
 
         Args:
@@ -76,25 +118,37 @@ class MeasGraph:
             V_to (Vertex): Sink Vertex
             meas (numpy array): 3x1 measurement associated with edge
             weight (numpy array): 3x3 weight associated with edge
+            etype (str) : type of edge, if specified (p2m_trans, p2p_trans, p2p_rot)
         """
-        # If just strings given, convert to vertices
-        if type(V_from) == str:
-            if V_from in self.Vp.keys():
-                V_from = self.Vp[V_from]
-            else:
-                raise Exception(f"FROM index {V_from} is not in the list of pose indices")
-        if type(V_to) == str:
-            if V_to in self.Vp.keys():
-                V_to = self.Vp[V_to]
-            elif V_to in self.Vm.keys():
-                V_to = self.Vm[V_to]
-            else:
-                raise Exception(f"TO index {V_to} is not in the list of pose or map indices")
-        # Modify the connection lists in the vertices
-        V_from.to_list += [V_to]
-        V_to.from_list += [V_from]
+        # Check if inputs are strings and get vertices.    
+        V_from, V_to = self.find_edge_verts(V_from, V_to)
         # If source vertex has no edges yet, add to edge dict
         if not V_from in self.E.keys():
             self.E[V_from] = {}
-        # Define edge
-        self.E[V_from][V_to] = (meas, weight)
+        # Either add edge or update it if already existing
+        if not V_to in self.E[V_from].keys():
+            self.E[V_from][V_to] = Edge(V_from, V_to, meas, weight, etype)
+            # Modify the connection lists in the vertices
+            V_from.to_list += [V_to]
+            V_to.from_list += [V_from]
+        else:
+            self.E[V_from][V_to].update(meas, weight, etype)
+        
+    def get_edge(self, V1, V2):
+        """Retrieve an edge
+
+        Args:
+            V1 (Vertex, str): outgoing vertex
+            V2 ( Vertex, str ): incoming vertex
+
+        Returns:
+            Edge : Edge corresponding to vertices if it exists
+        """
+        # Check if inputs are strings and get vertices.    
+        V1, V2 = self.find_edge_verts(V1, V2)
+        try:
+            e = self.E[V1][V2]
+        except:
+            e = []
+        return e
+        

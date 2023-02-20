@@ -7,11 +7,9 @@ import os
 import sys
 from run_test import run_test
 
-# Append working dir
-sys.path.append(os.path.dirname(__file__) + "/../")
-print("appended:", sys.path[-1])
-# Import module files
-from stereo_problems import Localization
+# dev imports
+from mwcerts.stereo_problems import Localization
+from mwcerts.mat_weight_problem import Camera
 from poly_matrix.poly_matrix import PolyMatrix
 
 # Create results Folder

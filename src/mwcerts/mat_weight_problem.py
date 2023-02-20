@@ -2,19 +2,23 @@
 
 import numpy as np
 from poly_matrix.poly_matrix import PolyMatrix
-from meas_graph import MeasGraph
+from mwcerts.meas_graph import MeasGraph, MapVertex
 import cvxpy as cp
-import numpy.linalg as la
+import scipy.linalg as la
 import scipy.sparse.linalg as sla
-from collections import namedtuple
-from copy import copy
+import spatialmath as sm
+# Plotting
+import matplotlib.pyplot as plt
+from mpl_toolkits import mplot3d
+
 
 class Constraint:
     def __init__(self,A : PolyMatrix, b : float , label : str):
         self.A = A
         self.b = b
         self.label = label
-    
+
+   
 class MatrixWeightedProblem:
     """
     Generic Matrix Weighted Problem Class
@@ -178,3 +182,77 @@ class MatrixWeightedProblem:
         if x[ind] < 0:
               x = -x      
         return x
+    
+    def gauss_isotrp_meas_model(self, edgeList, sigma):
+        """Generate isotropic Gaussian corrupted measurements based on a list of edges
+
+        Args:
+            edgeList (_type_): list of tuples of strings indicating edges
+            sigma (_type_): Noise level
+        """
+        if np.abs(sigma) < 1e-9:
+            W = np.eye(3)
+        else:
+            W = np.eye(3)/sigma**2
+            
+        for edge in edgeList:
+            # Get vertices
+            v1Lbl, v2Lbl = edge
+            v1 = self.G.Vp[v1Lbl]
+            v2 = self.G.Vm[v2Lbl]
+            # Generate Measurement and add edge
+            y = v1.C_p0 @ (v2.r_in0 - v1.r_in0) + sigma*np.random.randn(3,1)
+            self.G.add_edge(v1,v2,y,W)
+    
+    def plot_ground_truth(self):
+        ax = plt.axes(projection='3d')
+        # Plot poses
+        for v in self.G.Vp.values():
+            pose = sm.SE3.Rt(v.C_p0,v.r_in0)
+            pose.plot()
+        # Plot map points
+        for v in self.G.Vm.values():
+            ax.scatter3D(v.r_in0[0],v.r_in0[1],v.r_in0[2])
+        # Setup
+        ax.axis('equal')
+        plt.grid()
+        ax.set_xlabel("X-Axis")
+        ax.set_ylabel("Y-Axis")
+        ax.set_zlabel("Z-Axis")
+        
+        return ax
+        
+    def plot_measurements(self,ax):
+        """Loop through measurements and plot points + error ellipsoid
+        """
+        for v1 in self.G.E.keys():
+            for v2 in self.G.E[v1]:
+                if isinstance(v2, MapVertex):
+                    # Plot measurement in base frame
+                    y_inP = self.G.E[v1][v2].meas['trans']
+                    C_p0 = v1.C_p0
+                    y_in0 = C_p0.T @ y_inP
+                    ax.scatter3D(y_in0[0,0],y_in0[1,0],y_in0[2,0],marker='*',color='g')
+                    # Rotate ellipsoid to base frame and plot
+                    W = self.G.E[v1][v2].weight["trans"]
+                    Cov = np.linalg.inv(W)
+                    Cov_0 = C_p0.T @ Cov @ C_p0
+                    plot_ellipsoid(y_in0, Cov_0, ax=ax)
+
+                    
+def plot_ellipsoid(bias, cov, ax=None, color='b',stds=1,label=None):
+    if ax is None:
+        ax = plt.axes(projection='3d')
+    # Parameterize in terms of angles
+    u = np.linspace(0.0, 2.0 * np.pi, 100)
+    v = np.linspace(0.0, np.pi, 100)
+    x = np.outer(np.cos(u), np.sin(v))
+    y = np.outer(np.sin(u), np.sin(v))
+    z = np.outer(np.ones_like(u), np.cos(v))
+    L = np.linalg.cholesky(cov)
+    ellipsoid = (stds*L @ np.stack((x, y, z), 0).reshape(3, -1) + bias).reshape(3, *x.shape)
+    surf = ax.plot_surface(*ellipsoid, rstride=4, cstride=4, color=color, alpha=0.25,label=label)
+    # These lines required for legend
+    surf._edgecolors2d = surf._edgecolor3d
+    surf._facecolors2d = surf._facecolor3d
+    return surf

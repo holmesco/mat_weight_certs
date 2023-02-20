@@ -1,11 +1,25 @@
 #!/usr/bin/env python3
 
-import matplotlib.pyplot as plot
-from mat_weight_problem import MatrixWeightedProblem, Constraint
-from meas_graph import MapVertex
+import matplotlib.pyplot as plt
+from mwcerts.mat_weight_problem import MatrixWeightedProblem, Constraint
+from mwcerts.meas_graph import MapVertex
 from poly_matrix.poly_matrix import PolyMatrix
 import numpy as np
+from scipy.linalg import issymmetric
+import scipy.linalg as la
+import spatialmath as sm
 
+
+
+class Camera():
+    def __init__(camera):
+        camera.f_u = 200
+        camera.f_v = 200
+        camera.c_u = 0
+        camera.c_v = 0
+        camera.b = 0.05
+        camera.sigma_u = 0.5
+        camera.sigma_v = 0.5
 
 class Localization(MatrixWeightedProblem):
     """Localization problem with map points known. 
@@ -37,7 +51,8 @@ class Localization(MatrixWeightedProblem):
         for v1 in self.G.E.keys():
             for v2 in self.G.E[v1].keys():
                 # Get measurement and weight
-                y, W = self.G.E[v1][v2]
+                y = self.G.E[v1][v2].meas['trans']
+                W = self.G.E[v1][v2].weight['trans']
                 # Define dummy poly matrix for cost element
                 Q_e = PolyMatrix()
                 # Homogenization variable
@@ -89,24 +104,65 @@ class Localization(MatrixWeightedProblem):
         A = PolyMatrix()
         A[w0,w0] = 1.
         self.constraints += [Constraint(A, 1., "Homog")]
-    
-    def gauss_isotrp_meas_model(self, edgeList, sigma):
-        """Generate isotropic Gaussian corrupted measurements based on a list of edges
-
-        Args:
-            edgeList (_type_): list of tuples of strings indicating edges
-            sigma (_type_): Noise level
-        """
-        if np.abs(sigma) < 1e-9:
-            W = np.eye(3)
+        
+def stereo_meas_model(prb : MatrixWeightedProblem, edgeList : list, c : Camera,\
+        lin_about_gt : bool=False):
+    # Loop over edges in pose to measurement graph
+    u_list = []
+    v_list = []
+    d_list = []
+    for edge in edgeList:
+        # Get vertices
+        v1Lbl, v2Lbl = edge
+        v1 = prb.G.Vp[v1Lbl]
+        v2 = prb.G.Vm[v2Lbl]
+        # Get Euclidean Measurement
+        meas = v1.C_p0 @ (v2.r_in0 - v1.r_in0)
+        #Define pixel values and disparity
+        u_bar = c.f_u*meas[0,0]/meas[2,0]+c.c_u
+        v_bar = c.f_v*meas[1,0]/meas[2,0]+c.c_v
+        d_bar = c.f_u*c.b/meas[2,0]
+        # Add noise (separate noise vector for u defined 
+        # so that the noise is actually correlated)
+        u_noise = c.sigma_u*np.random.randn(2,1)
+        u = u_bar + u_noise[0,0]
+        v = v_bar + c.sigma_v*np.random.randn(1)[0]
+        d = d_bar + np.sum(u_noise,axis = 0)[0]
+        # TODO there should be probably be some filtering based on
+        # negative disparity
+        # Pixel and disparity covariance
+        Sigma_cam = np.array([[c.sigma_u**2, 0, c.sigma_u**2],
+                            [0,     c.sigma_v**2, 0],
+                            [c.sigma_u**2, 0 ,2*c.sigma_u**2]])
+        # Define covariance. We assume that the
+        # measured values are close to their means and linearize about
+        # them.
+        if lin_about_gt:
+            G = np.array([[c.b/d_bar , 0, -c.b*(u_bar  - c.c_u)/d_bar **2],
+                    [0 , c.f_u*c.b/c.f_v/d_bar, -c.f_u/c.f_v*c.b*(v_bar  - c.c_v)/d_bar **2],
+                    [0, 0, -c.f_u*c.b/d_bar **2]])
         else:
-            W = np.eye(3)/sigma**2
-            
-        for edge in edgeList:
-            # Get vertices
-            v1Lbl, v2Lbl = edge
-            v1 = self.G.Vp[v1Lbl]
-            v2 = self.G.Vm[v2Lbl]
-            # Generate Measurement and add edge
-            y = v1.C_p0 @ (v2.r_in0 - v1.r_in0) + sigma*np.random.randn(3,1)
-            self.G.addEdge(v1,v2,y,W)
+            G = np.array([[c.b/d, 0, -c.b*(u - c.c_u)/d**2],
+                    [0 , c.f_u*c.b/c.f_v/d, -c.f_u/c.f_v*c.b*(v - c.c_v)/d**2],
+                    [0, 0, -c.f_u*c.b/d**2]])
+        Cov = G @ Sigma_cam @ G.T
+        # Invert to get weighting (in camera frame) - Force to be symmetric
+        W = pd_inv(Cov)
+        W = (W + W.T)/2
+        if not issymmetric(W,atol=1e-13):
+            raise ValueError("Weight Matrix not Symmetric")
+        # Re-estimate euclidian position
+        r = np.array([[(u - c.c_u)*c.b/d, c.f_u/c.f_v*(v-c.c_v)*c.b/d, c.f_u*c.b/d]]).T
+        # Add edge to measurement graph
+        prb.G.add_edge(v1,v2,r,W)
+        # Store list of pixel points
+        u_list += [u]
+        v_list += [v]
+        d_list += [d]
+    return (u_list, v_list, d_list)
+    
+def pd_inv(a):
+    n = a.shape[0]
+    I = np.identity(n)
+    return la.solve(a, I, sym_pos = True, overwrite_b = True)
+    

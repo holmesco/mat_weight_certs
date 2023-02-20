@@ -6,12 +6,8 @@ import scipy.sparse.linalg as sla
 import numpy.linalg as la
 import os
 import sys
-
-# Append working dir
-sys.path.append(os.path.dirname(__file__) + "/../")
-print("appended:", sys.path[-1])
 # Import module files
-from stereo_problems import Localization
+from mwcerts.stereo_problems import Localization
 from poly_matrix.poly_matrix import PolyMatrix
 
 def run_test(loc : Localization, loc_res : str):

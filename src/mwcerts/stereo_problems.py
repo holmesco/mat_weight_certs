@@ -2,14 +2,19 @@
 
 import matplotlib.pyplot as plt
 from mwcerts.mat_weight_problem import MatrixWeightedProblem, Constraint
-from mwcerts.meas_graph import MapVertex
+from mwcerts.meas_graph import MapVertex, Vertex
 from poly_matrix.poly_matrix import PolyMatrix
 import numpy as np
 from scipy.linalg import issymmetric
 import scipy.linalg as la
 import spatialmath as sm
+import scipy.sparse as sp
 
-
+class GaussNewtonOpts:
+    def __init__(self):
+        self.tol_grad_norm_sq = 1e-10
+        self.max_iter = 200
+        
 
 class Camera():
     def __init__(camera):
@@ -99,13 +104,99 @@ class Localization(MatrixWeightedProblem):
                     else:
                         A[w0,w0] = 0.
                     self.constraints += [Constraint(A,0.,"O3")]
-
         # Homogenization 
         A = PolyMatrix()
         A[w0,w0] = 1.
         self.constraints += [Constraint(A, 1., "Homog")]
         
-def stereo_meas_model(prb : MatrixWeightedProblem, edgeList : list, c : Camera,\
+    def gauss_newton(self, vert_list : list, opt : GaussNewtonOpts=GaussNewtonOpts(), x_init=None):
+        
+        # define variable index list
+        var_inds={}
+        ind = 0
+        for v in vert_list:
+            var_inds[v]=ind
+            ind = ind+6       
+        # Init GN values: variable is stored in the "Lie algebra" form according to
+        # the vertex list vert_list
+        n_vars = len(vert_list)
+        if x_init is None:
+            x = np.zeros(n_vars*6)
+        else:
+            x = x_init
+        grad_norm_sq = np.Inf
+        n_iter = 0
+        # Main loop
+        print("| Iteration | Grd Nrm Sq |   Cost    |")
+        while grad_norm_sq > opt.tol_grad_norm_sq and n_iter < opt.max_iter:
+            # Init list of values in Jacobian and Weight Matrices
+            J_rows = np.array([])
+            J_cols = np.array([])
+            J_vals = np.array([])
+            W_rows = np.array([])
+            W_cols = np.array([])
+            W_vals = np.array([])
+            err = []
+            cnt = 0
+            for v1 in vert_list:
+                for v2 in v1.to_list:
+                    xi = x[var_inds[v1]:var_inds[v1]+6]
+                    y_21_1 = self.G.E[v1][v2].meas['trans'] 
+                    T_10 = np.array(sm.Twist3(xi).SE3())
+                    p_20_0 = np.vstack((v2.r_in0,[[1]]))
+                    # Construct error
+                    p_21_1 = T_10 @ p_20_0
+                    err += [ y_21_1 - p_21_1[0:3,[0]] ]
+                    # Construct Jacobian and get weight
+                    J_21 = -circ_dot(p_21_1)
+                    W_21 = self.G.E[v1][v2].weight['trans'] 
+                    # Store sparse values
+                    nz = np.nonzero(J_21)
+                    J_rows=np.append(J_rows, cnt*3+nz[0])
+                    J_cols=np.append(J_cols, var_inds[v1]+nz[1])
+                    J_vals=np.append(J_vals, J_21[nz])
+                    nz = np.nonzero(W_21)
+                    W_rows=np.append(W_rows, cnt*3+nz[0])
+                    W_cols=np.append(W_cols, cnt*3+nz[1])
+                    W_vals=np.append(W_vals, W_21[nz])
+                    # error counter
+                    cnt += 1
+            # Assemble error
+            err_vec = np.vstack(err)
+            # Construct sparse matrices
+            J = sp.coo_matrix((J_vals, (J_rows, J_cols)), shape=(len(err_vec),n_vars*6))
+            W = sp.coo_matrix((W_vals, (W_rows, W_cols)), shape=(len(err_vec),len(err_vec)))
+            # Compute gradiant
+            Grad = - 2 * J.T @ W @ err_vec
+            grad_norm_sq = np.linalg.norm(Grad)
+            Hessian = J.T @ W @ J
+            # Compute and apply update
+            del_xi = sp.linalg.spsolve(Hessian, Grad)
+            for v in vert_list:
+                xi = x[var_inds[v1]:var_inds[v1]+6]
+                T_10 = sm.Twist3(xi).SE3()
+                T_10_new = sm.Twist3(del_xi).SE3() @ T_10
+                x[var_inds[v1]:var_inds[v1]+6] = np.array(sm.Twist3(T_10_new))
+            # Update and status
+            n_iter += 1
+            cost = err_vec.T @ W @ err_vec
+            print(f"| {n_iter:<9} | ",f"{grad_norm_sq:<9} | ",f"{cost[0,0]:<9} |")
+        
+        return x
+            
+                
+                
+            
+            
+            
+                    
+def circ_dot(homog_vec):
+    return np.hstack( (homog_vec[3,[0]]*np.eye(3) , -skew(homog_vec[0:3,0])) )
+    
+def skew(vec): 
+    return np.array([[0, -vec[2], vec[1]],[vec[2], 0, -vec[0]],[-vec[1], vec[0], 0]])           
+
+def stereo_meas_model(prb : MatrixWeightedProblem, edgeList : list, c : Camera, \
         lin_about_gt : bool=False):
     # Loop over edges in pose to measurement graph
     u_list = []

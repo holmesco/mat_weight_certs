@@ -21,7 +21,7 @@ def test_covariance():
     r_p = [np.zeros((3,1))]
     C = [np.eye(3)]
     # Map Point
-    r_m = [np.array([[0,1,3]]).T]
+    r_m = [np.array([[0,0,3]]).T]
     # Make graph
     loc = Localization(r_p,C,r_m)
     # Get Covariances by running model N times
@@ -35,6 +35,9 @@ def test_covariance():
     plt.axis('equal')
     ax.scatter(X[0,:],X[1,:],X[2,:],marker='.',color='k',s=2,alpha=0.2,label="Sample Points")
     ax.legend()
+    ax.set_xlabel('X Axis')
+    ax.set_ylabel('Y Axis')
+    ax.set_zlabel('Z Axis')
     plt.show()
 
     # Check differences

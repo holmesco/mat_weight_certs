@@ -27,3 +27,4 @@ dependencies:
         # - <some package only available on PyPI>
         - -e .  # Build local source folder
         - spatialmath-python
+        #- asrl-pylgmath --> working on local version.

@@ -2,10 +2,10 @@
 
 import numpy as np
 from poly_matrix.poly_matrix import PolyMatrix
-from mwcerts.meas_graph import MeasGraph, MapVertex
+from mwcerts.meas_graph import MeasGraph, MapVertex, Vertex
 import cvxpy as cp
 import scipy.linalg as la
-import scipy.sparse.linalg as sla
+import scipy.sparse as sp
 import spatialmath as sm
 # Plotting
 import matplotlib.pyplot as plt
@@ -13,12 +13,11 @@ from mpl_toolkits import mplot3d
 
 
 class Constraint:
-    def __init__(self,A : PolyMatrix, b : float , label : str):
+    def __init__(self, A : PolyMatrix, b : float , label : str):
         self.A = A
         self.b = b
         self.label = label
 
-   
 class MatrixWeightedProblem:
     """
     Generic Matrix Weighted Problem Class
@@ -153,12 +152,11 @@ class MatrixWeightedProblem:
                 for c in self.constraints_r]
         # Condition the cost matrix
         Q = self.Q.get_matrix(vars)
-        q_scale = sla.norm(Q)
+        q_scale = sp.linalg.norm(Q)
         Q = Q / q_scale
         # Run CVX
         cprob = cp.Problem(cp.Minimize(cp.trace(Q @ X)), constraints)
         cprob.solve(solver=self.SDP_solvr,verbose=True)
-
         
         return X,cprob
         
@@ -239,8 +237,21 @@ class MatrixWeightedProblem:
                     Cov_0 = C_p0.T @ Cov @ C_p0
                     plot_ellipsoid(y_in0, Cov_0, ax=ax)
 
-                    
-def plot_ellipsoid(bias, cov, ax=None, color='b',stds=1,label=None):
+
+def plot_ellipsoid(bias, cov, ax=None, color='b',stds=1,label : str=None):
+    """ Plot a 3D ellipsoid
+
+    Args:
+        bias (_type_): offset to center of ellipsoid
+        cov (_type_): covariance matrix associated with ellipsoid
+        ax (_type_, optional): axis handle. Defaults to None.
+        color (str, optional): color of ellipsoid. Defaults to 'b'.
+        stds (int, optional): Number of standard deviations for ellipsoid. Defaults to 1.
+        label (str): Label string for plotting. Defaults to None.
+
+    Returns:
+        _type_: _description_
+    """
     if ax is None:
         ax = plt.axes(projection='3d')
     # Parameterize in terms of angles

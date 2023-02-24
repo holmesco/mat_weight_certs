@@ -9,6 +9,7 @@ from scipy.linalg import issymmetric
 import scipy.linalg as la
 import spatialmath as sm
 import scipy.sparse as sp
+from pylgmath.pylgmath.se3.transformation import Transformation as Trans
 
 class GaussNewtonOpts:
     def __init__(self):
@@ -109,21 +110,56 @@ class Localization(MatrixWeightedProblem):
         A[w0,w0] = 1.
         self.constraints += [Constraint(A, 1., "Homog")]
         
-    def gauss_newton(self, vert_list : list, opt : GaussNewtonOpts=GaussNewtonOpts(), x_init=None):
+    def init_gauss_newton(self, sigma=0.):
+        """Generate ground truth vector with gaussian noise in lie algebra.
+
+        Args:
+            sigma (float, optional): Standard Deviation for Gaussian Noise. Defaults to 0..
+
+        Returns:
+            numpy array : initialization vector
+        """
+        x_init = []
+        for var in self.var_list:
+            if not "w" in var:
+                label = var.split("_")[0]
+                v = self.G.Vp[label]
+                xi = Trans(C_ba=v.C_p0, r_ba_in_a=v.r_in0).vec()
+                if "t" in var:
+                    x_init += [ xi[:3,[0]] + sigma*np.random.randn(3,1) ]
+                elif "C" in var:
+                    x_init += [ xi[3:, [0]] + sigma*np.random.randn(3,1) ]
+        return np.vstack(x_init)
         
+    def gauss_newton(self, opt : GaussNewtonOpts=GaussNewtonOpts(), x_init=None):
+        """ Run Gauss-Newton algorithm for the localization problem
+
+        Args:
+            opt (GaussNewtonOpts, optional): Options to be used with GN. Defaults to GaussNewtonOpts().
+            x_init (_type_, optional): Initialization vector. Defaults to None => all zeros.
+
+        Returns:
+            x_sol : dictionary of Gauss-Newton solution variables
+            info : dictionary of useful optimization outputs.
+        """
         # define variable index list
         var_inds={}
-        ind = 0
-        for v in vert_list:
-            var_inds[v]=ind
-            ind = ind+6       
-        # Init GN values: variable is stored in the "Lie algebra" form according to
+        n_vars = 0
+        for var in self.var_list.keys():
+            # Only assign variables for rotations or translations
+            if not "w" in var:
+                var_inds[var]=list(range(n_vars*3, (n_vars+1)*3))
+                n_vars += 1
+                     
+        # Init GN: variable is stored in the "Lie algebra" form according to
         # the vertex list vert_list
-        n_vars = len(vert_list)
         if x_init is None:
-            x = np.zeros(n_vars*6)
+            x_init = np.zeros((n_vars*3,1))
         else:
-            x = x_init
+            if len(x_init.shape) == 1:
+                x_init = np.expand_dims(x_init,1)
+            assert x_init.shape[0] == n_vars*3, "Initialixation vector has wrong number of variables"
+        x = x_init
         grad_norm_sq = np.Inf
         n_iter = 0
         # Main loop
@@ -138,58 +174,83 @@ class Localization(MatrixWeightedProblem):
             W_vals = np.array([])
             err = []
             cnt = 0
-            for v1 in vert_list:
-                for v2 in v1.to_list:
-                    xi = x[var_inds[v1]:var_inds[v1]+6]
-                    y_21_1 = self.G.E[v1][v2].meas['trans'] 
-                    T_10 = np.array(sm.Twist3(xi).SE3())
-                    p_20_0 = np.vstack((v2.r_in0,[[1]]))
+            # Loop through edges in factor graph
+            for v1 in self.G.E.keys():
+                for v2 in self.G.E[v1].keys():
+                    # varialble indicies (addition of lists)
+                    inds = var_inds[v1.label+"_t"] + var_inds[v1.label+"_C"]
+                    # Get relevant variables
+                    xi = x[inds]
+                    y_ba_a = self.G.E[v1][v2].meas['trans'] 
+                    T_a0 = Trans(xi_ab=xi)
+                    p_b0_0 = np.vstack((v2.r_in0,[[1]]))
                     # Construct error
-                    p_21_1 = T_10 @ p_20_0
-                    err += [ y_21_1 - p_21_1[0:3,[0]] ]
+                    p_ba_a = T_a0 @ p_b0_0
+                    err += [ y_ba_a - p_ba_a[0:3,[0]] ]
                     # Construct Jacobian and get weight
-                    J_21 = -circ_dot(p_21_1)
-                    W_21 = self.G.E[v1][v2].weight['trans'] 
+                    J_ba = -circ_dot(p_ba_a)
+                    W_ba = self.G.E[v1][v2].weight['trans'] 
                     # Store sparse values
-                    nz = np.nonzero(J_21)
+                    nz = np.nonzero(J_ba)
                     J_rows=np.append(J_rows, cnt*3+nz[0])
-                    J_cols=np.append(J_cols, var_inds[v1]+nz[1])
-                    J_vals=np.append(J_vals, J_21[nz])
-                    nz = np.nonzero(W_21)
+                    J_cols=np.append(J_cols, [inds[i] for i in nz[1]])
+                    J_vals=np.append(J_vals, J_ba[nz])
+                    nz = np.nonzero(W_ba)
                     W_rows=np.append(W_rows, cnt*3+nz[0])
                     W_cols=np.append(W_cols, cnt*3+nz[1])
-                    W_vals=np.append(W_vals, W_21[nz])
+                    W_vals=np.append(W_vals, W_ba[nz])                    
                     # error counter
                     cnt += 1
             # Assemble error
             err_vec = np.vstack(err)
             # Construct sparse matrices
-            J = sp.coo_matrix((J_vals, (J_rows, J_cols)), shape=(len(err_vec),n_vars*6))
+            J = sp.coo_matrix((J_vals, (J_rows, J_cols)), shape=(len(err_vec),n_vars*3))
             W = sp.coo_matrix((W_vals, (W_rows, W_cols)), shape=(len(err_vec),len(err_vec)))
+            # Rescale Problem to avoid numerical issues
+            w_scl = sp.linalg.norm(W)
+            W /= w_scl
             # Compute gradiant
-            Grad = - 2 * J.T @ W @ err_vec
+            Grad = - J.T @ W @ err_vec
             grad_norm_sq = np.linalg.norm(Grad)
             Hessian = J.T @ W @ J
             # Compute and apply update
-            del_xi = sp.linalg.spsolve(Hessian, Grad)
-            for v in vert_list:
-                xi = x[var_inds[v1]:var_inds[v1]+6]
-                T_10 = sm.Twist3(xi).SE3()
-                T_10_new = sm.Twist3(del_xi).SE3() @ T_10
-                x[var_inds[v1]:var_inds[v1]+6] = np.array(sm.Twist3(T_10_new))
+            del_x = sp.linalg.spsolve(Hessian, Grad)
+            del_x=np.expand_dims(del_x,1)
+            for v1 in self.G.E.keys():
+                # varialble indicies (addition of lists)
+                inds = var_inds[v1.label+"_t"] + var_inds[v1.label+"_C"]
+                # Get relevant variables
+                xi = x[inds]
+                del_xi = del_x[inds]
+                T_a0 = Trans(xi_ab=xi)
+                T_a0_new = Trans(xi_ab=del_xi) @ T_a0
+                x[inds] = T_a0_new.vec()
             # Update and status
             n_iter += 1
-            cost = err_vec.T @ W @ err_vec
-            print(f"| {n_iter:<9} | ",f"{grad_norm_sq:<9} | ",f"{cost[0,0]:<9} |")
+            cost = err_vec.T @ W @ err_vec * w_scl
+            print(f"| {n_iter:9.4e} | ",f"{grad_norm_sq:9.4e} | ",f"{cost[0,0]:9.4e} |")
+            
+        # convert solution to expected format based on variable list
+        x_sol = {}
+        for var in self.var_list.keys():
+            if var == "w_0":
+                x_sol[var]=np.array([[1]])
+            elif "t" in var:
+                label = var.split("_")[0]
+                inds = var_inds[label+"_t"] + var_inds[label+"_C"]
+                T_ba = Trans(xi_ab=x[inds])
+                x_sol[label+'_C'] = np.reshape(T_ba.C_ba(),(9,1),order='F')
+                x_sol[label+'_t'] = T_ba.C_ba() @ T_ba.r_ba_ina()
+                x_sol[label+'_T_io'] = T_ba.matrix()
+        # Solution info
+        info = {}
+        info['cost'] = cost
+        info['grad_norm_sq'] = grad_norm_sq
+        info['x_lie'] = x
+        info['n_iter'] = n_iter
         
-        return x
-            
-                
-                
-            
-            
-            
-                    
+        return x_sol, info
+                          
 def circ_dot(homog_vec):
     return np.hstack( (homog_vec[3,[0]]*np.eye(3) , -skew(homog_vec[0:3,0])) )
     
@@ -250,7 +311,10 @@ def stereo_meas_model(prb : MatrixWeightedProblem, edgeList : list, c : Camera, 
         u_list += [u]
         v_list += [v]
         d_list += [d]
-    return (u_list, v_list, d_list)
+    u_list = np.array(u_list)
+    v_list = np.array(v_list)
+    d_list = np.array(d_list)
+    return u_list, v_list, d_list
     
 def pd_inv(a):
     n = a.shape[0]

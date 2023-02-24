@@ -56,15 +56,6 @@ class MeasGraph:
     """
     Class defining the measurement (factor) graph for a given problem
     """
-    # Pose Vertex Set - dictionary indexed on vertex labels
-    Vp = {}
-    # Map or Landmark Vertex Set - dictionary indexed on vertex labels
-    Vm = {}
-    # Edge Structure
-    # dict of dicts indexed on vertex sets
-    # Stores measurement and weights
-    E = {}
-    
     def __init__(self, r_p_in0, C_p_0, r_m_in0):
         """ Constructor for measurement graph in a SLAM problem or subproblem.
         Expects ground truth input values.
@@ -74,6 +65,14 @@ class MeasGraph:
             C_p_0:   (list) of spatial math rotation matrices rotating base frame vector to pose frame
             r_m_in0: (list) of translations to map point in world frame
         """
+        # Pose Vertex Set - dictionary indexed on vertex labels
+        self.Vp = dict()
+        # Map or Landmark Vertex Set - dictionary indexed on vertex labels
+        self.Vm = dict()
+        # Edge Structure
+        # dict of dicts indexed on vertex sets
+        # Stores measurement and weights
+        self.E = dict()
         # Make sure that pose length data is consistent
         if not len(C_p_0) == len(r_p_in0):
             raise Exception("Input Pose data has inconsistent length")

@@ -5,7 +5,7 @@ import scipy.sparse.linalg as sla
 import numpy.linalg as la
 import os
 import sys
-from run_test import run_test
+from scripts.run_test import run_test
 
 # dev imports
 from mwcerts.stereo_problems import Localization

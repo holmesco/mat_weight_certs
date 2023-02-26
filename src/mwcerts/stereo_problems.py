@@ -11,12 +11,6 @@ import spatialmath as sm
 import scipy.sparse as sp
 from pylgmath.pylgmath.se3.transformation import Transformation as Trans
 
-class GaussNewtonOpts:
-    def __init__(self):
-        self.tol_grad_norm_sq = 1e-10
-        self.max_iter = 200
-        
-
 class Camera():
     def __init__(camera):
         camera.f_u = 200
@@ -56,18 +50,15 @@ class Localization(MatrixWeightedProblem):
         # Loop through edges in measurement graph and define cost matrix
         for v1 in self.G.E.keys():
             for v2 in self.G.E[v1].keys():
-                # Get measurement and weight
-                y = self.G.E[v1][v2].meas['trans']
-                W = self.G.E[v1][v2].weight['trans']
-                # Define dummy poly matrix for cost element
-                Q_e = PolyMatrix()
-                # Homogenization variable
-                w0 = 'w_0'
-                if not isinstance(v2,MapVertex) :
-                    # Pose to Pose measurement
-                    raise Exception('StereoLocalization problem should not have pose to pose measurements')
-                else:
-                    # Pose to Map measurement
+                # Pose-To-Map Measurement
+                if isinstance(v2,MapVertex):
+                    # Get measurement and weight
+                    y = self.G.E[v1][v2].meas['trans']
+                    W = self.G.E[v1][v2].weight['trans']
+                    # Define dummy poly matrix for cost element
+                    Q_e = PolyMatrix()
+                    # Homogenization variable
+                    w0 = 'w_0'
                     # Define labels
                     C1 = v1.label + '_C'
                     t1 = v1.label + '_t'
@@ -80,9 +71,31 @@ class Localization(MatrixWeightedProblem):
                     Q_e[t1, t1] = W
                     Q_e[t1, w0] = W @ y
                     Q_e[w0, w0] = y.T @ W @ y   
-                # Add to cost matrix
-                self.Q += Q_e
-                
+                    # Add to cost matrix
+                    self.Q += Q_e
+                else: # Pose-To-Pose Measurement
+                    if "trans" in self.G.E[v1][v2].meas:
+                        # Get measurement and scalar weight
+                        t_tild = self.G.E[v1][v2].meas['trans']
+                        w = self.G.E[v1][v2].weight['trans']
+                        # Define dummy poly matrix for cost element
+                        Q_e = PolyMatrix()
+                        # Homogenization variable
+                        w0 = 'w_0'
+                        # Define labels 
+                        C1 = v1.label + '_C'
+                        t1 = v1.label + '_t0'
+                        t2 = v2.label + '_t0'
+                        # Define matrix
+                        Q_e[t1, t1] = -np.eye(3)*w
+                        Q_e[t2, t2] = np.eye(3)*w
+                        Q_e[w0, w0] = t_tild.T @ t_tild
+                        Q_e[C1, t1] = -np.kron(t_tild, np.eye(3))*w
+                        Q_e[C1, t2] = np.kron(t_tild, np.eye(3))*w
+                        Q_e[t1, t2] = -np.eye(3)*w
+                        # Add to cost matrix
+                        self.Q += Q_e
+                    
     def generate_constraints(self):
         """
         Generate the constraint matrices for each variable
@@ -131,131 +144,62 @@ class Localization(MatrixWeightedProblem):
                     x_init += [ xi[3:, [0]] + sigma*np.random.randn(3,1) ]
         return np.vstack(x_init)
         
-    def gauss_newton(self, opt : GaussNewtonOpts=GaussNewtonOpts(), x_init=None):
-        """ Run Gauss-Newton algorithm for the localization problem
+    def add_p2p_trans_meas(self, edge_list : list[tuple[str,str]], sigma : float):
+        """Add measurements to the graph corresponding to point to point translations 
+        This also involves adding a new translation variable for each pose to properly 
+        express the cost function as a quadratic.
+        Args:
+            edge_list (list[tuple[str,str]]): list of edges to add
+            sigma (float): noise value used across edges.
+        """
+        for edge in edge_list:
+            # Get vertices
+            v1Lbl, v2Lbl = edge
+            assert "x" in v1Lbl, "First vertex is not a pose"
+            v1 = self.G.Vp[v1Lbl]
+            assert "x" in v1Lbl, "Second vertex is not a pose"
+            v2 = self.G.Vp[v2Lbl]
+            # Add world frame variables to list
+            self.add_world_frame_vars([v1Lbl,v2Lbl])
+            # Define measurement and weight
+            meas = v1.C_p0 @ (v2.r_in0 - v1.r_in0) + sigma*np.random.randn(3,1)
+            if sigma > 0.:
+                weight = 1/sigma**2
+            else:
+                weight = 1
+            self.G.add_edge(v1,v2,meas,weight,'trans')
+            
+    def add_world_frame_vars(self, var_list: list[str]):
+        
+        """This function adds new variables to the problem that represent 
+        the translation in the world frame. This is required for localization with 
+        pose-to-pose (scalar weighted) measurements.
 
         Args:
-            opt (GaussNewtonOpts, optional): Options to be used with GN. Defaults to GaussNewtonOpts().
-            x_init (_type_, optional): Initialization vector. Defaults to None => all zeros.
-
-        Returns:
-            x_sol : dictionary of Gauss-Newton solution variables
-            info : dictionary of useful optimization outputs.
+            var_list (list[str]): list of pose variables (eg. "x1")
         """
-        # define variable index list
-        var_inds={}
-        n_vars = 0
-        for var in self.var_list.keys():
-            # Only assign variables for rotations or translations
-            if not "w" in var:
-                var_inds[var]=list(range(n_vars*3, (n_vars+1)*3))
-                n_vars += 1
-                     
-        # Init GN: variable is stored in the "Lie algebra" form according to
-        # the vertex list vert_list
-        if x_init is None:
-            x_init = np.zeros((n_vars*3,1))
-        else:
-            if len(x_init.shape) == 1:
-                x_init = np.expand_dims(x_init,1)
-            assert x_init.shape[0] == n_vars*3, "Initialixation vector has wrong number of variables"
-        x = x_init
-        grad_norm_sq = np.Inf
-        n_iter = 0
-        # Main loop
-        print("| Iteration | Grd Nrm Sq |   Cost    |")
-        while grad_norm_sq > opt.tol_grad_norm_sq and n_iter < opt.max_iter:
-            # Init list of values in Jacobian and Weight Matrices
-            J_rows = np.array([])
-            J_cols = np.array([])
-            J_vals = np.array([])
-            W_rows = np.array([])
-            W_cols = np.array([])
-            W_vals = np.array([])
-            err = []
-            cnt = 0
-            # Loop through edges in factor graph
-            for v1 in self.G.E.keys():
-                for v2 in self.G.E[v1].keys():
-                    # varialble indicies (addition of lists)
-                    inds = var_inds[v1.label+"_t"] + var_inds[v1.label+"_C"]
-                    # Get relevant variables
-                    xi = x[inds]
-                    y_ba_a = self.G.E[v1][v2].meas['trans'] 
-                    T_a0 = Trans(xi_ab=xi)
-                    p_b0_0 = np.vstack((v2.r_in0,[[1]]))
-                    # Construct error
-                    p_ba_a = T_a0 @ p_b0_0
-                    err += [ y_ba_a - p_ba_a[0:3,[0]] ]
-                    # Construct Jacobian and get weight
-                    J_ba = -circ_dot(p_ba_a)
-                    W_ba = self.G.E[v1][v2].weight['trans'] 
-                    # Store sparse values
-                    nz = np.nonzero(J_ba)
-                    J_rows=np.append(J_rows, cnt*3+nz[0])
-                    J_cols=np.append(J_cols, [inds[i] for i in nz[1]])
-                    J_vals=np.append(J_vals, J_ba[nz])
-                    nz = np.nonzero(W_ba)
-                    W_rows=np.append(W_rows, cnt*3+nz[0])
-                    W_cols=np.append(W_cols, cnt*3+nz[1])
-                    W_vals=np.append(W_vals, W_ba[nz])                    
-                    # error counter
-                    cnt += 1
-            # Assemble error
-            err_vec = np.vstack(err)
-            # Construct sparse matrices
-            J = sp.coo_matrix((J_vals, (J_rows, J_cols)), shape=(len(err_vec),n_vars*3))
-            W = sp.coo_matrix((W_vals, (W_rows, W_cols)), shape=(len(err_vec),len(err_vec)))
-            # Rescale Problem to avoid numerical issues
-            w_scl = sp.linalg.norm(W)
-            W /= w_scl
-            # Compute gradiant
-            Grad = - J.T @ W @ err_vec
-            grad_norm_sq = np.linalg.norm(Grad)
-            Hessian = J.T @ W @ J
-            # Compute and apply update
-            del_x = sp.linalg.spsolve(Hessian, Grad)
-            del_x=np.expand_dims(del_x,1)
-            for v1 in self.G.E.keys():
-                # varialble indicies (addition of lists)
-                inds = var_inds[v1.label+"_t"] + var_inds[v1.label+"_C"]
-                # Get relevant variables
-                xi = x[inds]
-                del_xi = del_x[inds]
-                T_a0 = Trans(xi_ab=xi)
-                T_a0_new = Trans(xi_ab=del_xi) @ T_a0
-                x[inds] = T_a0_new.vec()
-            # Update and status
-            n_iter += 1
-            cost = err_vec.T @ W @ err_vec * w_scl
-            print(f"| {n_iter:9.4e} | ",f"{grad_norm_sq:9.4e} | ",f"{cost[0,0]:9.4e} |")
+        for var in var_list:
+            assert "x" in var, "var_list must only contain pose variables"
+            # New var name and check if its already in the list of vars
+            nvar = var+"_t0"
+            if not nvar in self.var_list:
+                self.var_list[nvar] = 3
+                # Add corresponding contraints
+                e_k = np.eye(3)
+                for k in range(3):
+                    C_i0 = var+"_C"
+                    t_i0_in_i = var+"_t"
+                    t_i0_in_0 = nvar
+                    A = PolyMatrix()
+                    A[C_i0, t_i0_in_i] = -np.kron(e_k[:,[k]], np.eye(3)) 
+                    A[t_i0_in_0,"w_0"] = e_k[:,[k]]
+                    self.constraints += [Constraint(A, 0., "trans_world_pose")]
+                # Add corresponding redundant constraints
+                A = PolyMatrix()
+                A[t_i0_in_0,t_i0_in_0] = np.eye(3)
+                A[t_i0_in_i,t_i0_in_i] = -np.eye(3)
+                self.constraints_r += [Constraint(A,0.,"trans_world_pose")]
             
-        # convert solution to expected format based on variable list
-        x_sol = {}
-        for var in self.var_list.keys():
-            if var == "w_0":
-                x_sol[var]=np.array([[1]])
-            elif "t" in var:
-                label = var.split("_")[0]
-                inds = var_inds[label+"_t"] + var_inds[label+"_C"]
-                T_ba = Trans(xi_ab=x[inds])
-                x_sol[label+'_C'] = np.reshape(T_ba.C_ba(),(9,1),order='F')
-                x_sol[label+'_t'] = T_ba.C_ba() @ T_ba.r_ba_ina()
-                x_sol[label+'_T_io'] = T_ba.matrix()
-        # Solution info
-        info = {}
-        info['cost'] = cost
-        info['grad_norm_sq'] = grad_norm_sq
-        info['x_lie'] = x
-        info['n_iter'] = n_iter
-        
-        return x_sol, info
-                          
-def circ_dot(homog_vec):
-    return np.hstack( (homog_vec[3,[0]]*np.eye(3) , -skew(homog_vec[0:3,0])) )
-    
-def skew(vec): 
-    return np.array([[0, -vec[2], vec[1]],[vec[2], 0, -vec[0]],[-vec[1], vec[0], 0]])           
 
 def stereo_meas_model(prb : MatrixWeightedProblem, edgeList : list, c : Camera, \
         lin_about_gt : bool=False):
@@ -315,7 +259,8 @@ def stereo_meas_model(prb : MatrixWeightedProblem, edgeList : list, c : Camera, 
     v_list = np.array(v_list)
     d_list = np.array(d_list)
     return u_list, v_list, d_list
-    
+
+
 def pd_inv(a):
     n = a.shape[0]
     I = np.identity(n)

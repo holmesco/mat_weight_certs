@@ -16,6 +16,7 @@ dependencies:
     - scipy=1.10
     - cvxpy
     - mosek
+    - pandas
     
 
     # Testing & linting

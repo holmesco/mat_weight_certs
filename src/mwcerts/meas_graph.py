@@ -109,7 +109,7 @@ class MeasGraph:
                 raise NameError("Vertex not recognized")  
         return (V_from, V_to)
     
-    def add_edge(self, V_from, V_to, meas, weight, etype : str=None):
+    def add_edge(self, V_from : Vertex, V_to : Vertex, meas, weight, etype : str=None):
         """Add edge in measurement graph between two nodes.
 
         Args:

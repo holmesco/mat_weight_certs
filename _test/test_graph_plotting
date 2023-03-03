@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+import numpy as np
+import matplotlib.pyplot as plt
+import scipy.sparse.linalg as sla
+import numpy.linalg as la
+import os
+import sys
+import spatialmath.base as sm
+
+from mwcerts.stereo_problems import Localization, Camera,stereo_meas_model
+
+
+def test_graph_plotting():
+    # Ground Truth Translation
+    r_p = []
+    r_p += [np.array([[0,0,0]]).T]
+    r_p += [np.array([[0.5,0,0]]).T]
+    # r_p += [np.array([[0.5,0.5,0]]).T]
+    # Ground Truth Rotations
+    C_p = []
+    C_p += [sm.roty(0)]
+    C_p += [sm.roty(0.2)]
+    # C_p += [sm.roty(-0.2)]
+    
+    # Ground Truth Map Points
+    r_l = []
+    r_l += [np.array([[0,0,1]]).T]
+    r_l += [np.array([[0,0,2]]).T]
+    r_l += [np.array([[0,0,3]]).T]
+    r_l += [np.array([[1,0,2]]).T]
+    r_l += [np.array([[1,1,3]]).T]
+
+    # Generate problem instance
+    loc = Localization(r_p,C_p,r_l)
+    # Test Ground truth values
+    x = loc.get_gt_soln()
+    print(loc.var_list)
+    print(f"Length of GT vars: {len(x)}")
+
+    # Define edges
+    p2m_edges = [('x0','m0'),
+            ('x0','m1'),
+            ('x0','m2'),
+            ('x0','m3'),
+            ('x0','m4'),
+            ('x1','m0'),
+            ('x1','m1'),
+            ('x1','m2'),
+            ('x1','m3'),
+            ('x1','m4')]
+    p2p_edges = [('x0','x1')]
+    
+    # Generate measurements
+    sigma = 0.0
+    loc.gauss_isotrp_meas_model(p2m_edges,sigma)
+    loc.add_p2p_meas(edge_list=p2p_edges,sigma=sigma, mtype='trans')
+    
+    loc.G.plot()
+    
+if __name__ == "__main__":
+    test_graph_plotting()

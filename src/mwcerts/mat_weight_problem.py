@@ -10,6 +10,7 @@ import spatialmath as sm
 # Plotting
 import matplotlib.pyplot as plt
 from pylgmath.pylgmath.se3.transformation import Transformation as Trans
+import warnings
 
 
 class Constraint:
@@ -103,11 +104,11 @@ class MatrixWeightedProblem:
         x_sol_ = np.concatenate(x_sol,axis=0)
         return x_sol_
     
-    def validate_constraints(self, useRedun=False, tol=1e-8):
+    def validate_constraints(self, use_redun=False, tol=1e-8):
         """Check that constraints are satisfied by the ground truth solution
 
         Args:
-            useRedun ( bool ): Test redundant constraints as well
+            use_redun ( bool ): Test redundant constraints as well
         """
         if len(self.constraints) == 0:
             raise Exception("No constraints to test")
@@ -122,7 +123,7 @@ class MatrixWeightedProblem:
         check = np.abs(viol) < tol
         assert all(check), f"Constraints Violated: {[i for i,x in enumerate(check) if not x ]}"
         # Redundant constraints
-        if useRedun:
+        if use_redun:
             # Loop through constraints
             viol = []
             for c in self.constraints_r:
@@ -134,12 +135,12 @@ class MatrixWeightedProblem:
         
         print("Constraints Validated!")
     
-    def solve_primal_sdp(self, useRedun : bool=False, vars=None):
+    def solve_primal_sdp(self, use_redun : bool=False, vars=None):
         """
         Solve the relaxed SDP for the original QCQP problem
 
         Args:
-            useRedun (bool): When true, enables redundant constraints to tighten
+            use_redun (bool): When true, enables redundant constraints to tighten
                             problem.
         """
         # Variable list
@@ -155,8 +156,10 @@ class MatrixWeightedProblem:
         constraints += [cp.trace(c.A.get_matrix(vars) @ X) == c.b \
             for c in self.constraints]
         #   Redundant Affine:
-        if useRedun:
-            assert len(self.constraints_r) > 0, "Constraints have not been generated."
+        if use_redun:
+            print("****  Adding redundant constraints  ****")
+            if not len(self.constraints_r) > 0:
+                warnings.warn("Redundant constraints have not been generated.")
             constraints += [cp.trace(c.A.get_matrix(vars) @ X) == c.b \
                 for c in self.constraints_r]
         # Condition the cost matrix
@@ -190,6 +193,27 @@ class MatrixWeightedProblem:
               x = -x      
         return x
     
+    def init_gauss_newton(self, sigma=0.):
+        """Generate ground truth vector with gaussian noise in lie algebra.
+
+        Args:
+            sigma (float, optional): Standard Deviation for Gaussian Noise. Defaults to 0..
+
+        Returns:
+            numpy array : initialization vector
+        """
+        x_init = []
+        for var in self.var_list:
+            if not "w" in var:
+                label = var.split("_")[0]
+                v = self.G.Vp[label]
+                xi = Trans(C_ba=v.C_p0, r_ba_in_a=v.r_in0).vec()
+                if "t" in var and not "t0" in var:
+                    x_init += [ xi[:3,[0]] + sigma*np.random.randn(3,1) ]
+                elif "C" in var:
+                    x_init += [ xi[3:, [0]] + sigma*np.random.randn(3,1) ]
+        return np.vstack(x_init)
+    
     def gauss_newton(self, opt : GaussNewtonOpts=GaussNewtonOpts(), x_init=None):
         """ Run Gauss-Newton algorithm for the localization problem
 
@@ -206,12 +230,13 @@ class MatrixWeightedProblem:
         n_vars = 0
         for var in self.var_list.keys():
             # Only assign variables for rotations or translations
-            if not "w" in var:
+            if (not "w" in var) and ("t0" not in var):
                 var_inds[var]=list(range(n_vars*3, (n_vars+1)*3))
                 n_vars += 1
                      
         # Init GN: variable is stored in the "Lie algebra" form according to
-        # the vertex list vert_list
+        # the vertex list vert_list. Variable is expressed in the world frame
+        #    x(i) = xi_i = vec(T_io)
         if x_init is None:
             x_init = np.zeros((n_vars*3,1))
         else:
@@ -231,46 +256,89 @@ class MatrixWeightedProblem:
             W_rows = np.array([])
             W_cols = np.array([])
             W_vals = np.array([])
-            err = []
-            cnt = 0
+            err_list = []
+            offs = 0
             # Loop through edges in factor graph
             for v1 in self.G.E.keys():
                 for v2 in self.G.E[v1].keys():
-                    # variable indicies (addition of lists)
-                    inds = var_inds[v1.label+"_t"] + var_inds[v1.label+"_C"]
-                    # Get relevant variables
-                    xi = x[inds]
-                    y_ba_a = self.G.E[v1][v2].meas['trans'] 
-                    T_a0 = Trans(xi_ab=xi)
-                    p_b0_0 = np.vstack((v2.r_in0,[[1]]))
-                    # Construct error
-                    p_ba_a = T_a0 @ p_b0_0
-                    err += [ y_ba_a - p_ba_a[0:3,[0]] ]
-                    # Construct Jacobian and get weight
-                    J_ba = -circ_dot(p_ba_a)
-                    W_ba = self.G.E[v1][v2].weight['trans'] 
+                    if isinstance(v2, MapVertex):
+                        # POSE-TO-VERTEX TRANSLATION
+                        # ERROR: y_ba_a - T_a0 * p_b0_0
+                        # variable indicies (addition of lists)
+                        inds = var_inds[v1.label+"_t"] + var_inds[v1.label+"_C"]
+                        # Get relevant variables
+                        xi = x[inds]
+                        y_ba_a = self.G.E[v1][v2].meas['trans'] 
+                        T_a0 = Trans(xi_ab=xi)
+                        p_b0_0 = np.vstack((v2.r_in0,[[1]]))
+                        # Construct error
+                        p_ba_a = T_a0 @ p_b0_0
+                        err = y_ba_a - p_ba_a[0:3,[0]]
+                        # Construct Jacobian and get weight
+                        J_ij = -circ_dot(p_ba_a)
+                        W_ij = self.G.E[v1][v2].weight['trans'] 
+                    else: 
+                        # POSE-TO-POSE Tranformation - This error is evaluated in the 
+                        # Lie Algebra, based on the relative transformation
+                        # variable indicies (addition of lists)
+                        inds = var_inds[v1.label+"_t"] + var_inds[v1.label+"_C"] + \
+                                    var_inds[v2.label+"_t"] + var_inds[v2.label+"_C"]
+                        # Get relevant variables
+                        xi = x[inds]
+                        xi_i = xi[:6]
+                        xi_j = xi[6:]
+                        T_i0 = Trans(xi_ab=xi_i)
+                        T_j0 = Trans(xi_ab=xi_j)
+                        # Get measured transformation and weights
+                        meas = self.G.E[v1][v2].meas
+                        weight = self.G.E[v1][v2].weight
+                        if "transform" in meas:
+                            T_ji_meas = meas['transform']
+                            W_ij = weight['transform']
+                        else:
+                            r_ji_i = meas['trans']
+                            W_t = weight['trans']*np.eye(3)
+                            if "rot" in meas:
+                                C_ji = meas['rot']
+                                W_r = weight['rot']*np.eye(3)
+                            else:
+                                # if not defined, rotation weight should be zero
+                                C_ji = np.eye(3)
+                                W_r = np.zeros((3,3))
+                            assert W_r.shape == (3,3), "Weight matrix has incorrect shape"
+                            assert W_t.shape == (3,3), "Weight matrix has incorrect shape"
+                            W_ij = la.block_diag(W_t,W_r)
+                            T_ji_meas = Trans(C_ba=C_ji, r_ba_in_a=r_ji_i)
+                        # Construct error (Lie Algebra)
+                        T_ij = T_i0 @ T_j0.inverse()
+                        T_err = T_ji_meas @ T_ij
+                        err = T_err.vec()
+                        # Construct Jacobian and get scalar weight
+                        J_ij = np.hstack((T_ij.adjoint(), -np.eye(6)))
+                        
                     # Store sparse values
-                    nz = np.nonzero(J_ba)
-                    J_rows=np.append(J_rows, cnt*3+nz[0])
+                    nz = np.nonzero(J_ij)
+                    J_rows=np.append(J_rows, offs+nz[0])
                     J_cols=np.append(J_cols, [inds[i] for i in nz[1]])
-                    J_vals=np.append(J_vals, J_ba[nz])
-                    nz = np.nonzero(W_ba)
-                    W_rows=np.append(W_rows, cnt*3+nz[0])
-                    W_cols=np.append(W_cols, cnt*3+nz[1])
-                    W_vals=np.append(W_vals, W_ba[nz])                    
-                    # error counter
-                    cnt += 1
+                    J_vals=np.append(J_vals, J_ij[nz])
+                    nz = np.nonzero(W_ij)
+                    W_rows=np.append(W_rows, offs+nz[0])
+                    W_cols=np.append(W_cols, offs+nz[1])
+                    W_vals=np.append(W_vals, W_ij[nz])                    
+                    # update error array and indexing offset
+                    err_list += [err]
+                    offs += err.shape[0]
             # Assemble error
-            err_vec = np.vstack(err)
+            err_vec = np.vstack(err_list)
             # Construct sparse matrices
             J = sp.coo_matrix((J_vals, (J_rows, J_cols)), shape=(len(err_vec),n_vars*3))
             W = sp.coo_matrix((W_vals, (W_rows, W_cols)), shape=(len(err_vec),len(err_vec)))
             # Rescale Problem to avoid numerical issues
-            w_scl = sp.linalg.norm(W)
-            W /= w_scl
+            # w_scl = sp.linalg.norm(W)
+            # W /= w_scl
             # Compute gradiant
             Grad = - J.T @ W @ err_vec
-            grad_norm_sq = np.linalg.norm(Grad)
+            grad_norm_sq = np.linalg.norm(Grad)**2
             Hessian = J.T @ W @ J
             # Compute and apply update
             del_x = sp.linalg.spsolve(Hessian, Grad)
@@ -286,8 +354,8 @@ class MatrixWeightedProblem:
                 x[inds] = T_a0_new.vec()
             # Update and status
             n_iter += 1
-            cost = err_vec.T @ W @ err_vec * w_scl
-            print(f"| {n_iter:9.4e} | ",f"{grad_norm_sq:9.4e} | ",f"{cost[0,0]:9.4e} |")
+            cost = err_vec.T @ W @ err_vec 
+            print(f"| {n_iter:9d} | ",f"{grad_norm_sq:9.4e} | ",f"{cost[0,0]:9.4e} |")
             
         # convert solution to expected format based on variable list
         x_sol = {}
@@ -300,6 +368,7 @@ class MatrixWeightedProblem:
                 T_ba = Trans(xi_ab=x[inds])
                 x_sol[label+'_C'] = np.reshape(T_ba.C_ba(),(9,1),order='F')
                 x_sol[label+'_t'] = T_ba.C_ba() @ T_ba.r_ba_ina()
+                x_sol[label+'_t0'] = T_ba.r_ba_ina()
                 x_sol[label+'_T_io'] = T_ba.matrix()
         # Solution info
         info = {}
@@ -307,15 +376,16 @@ class MatrixWeightedProblem:
         info['grad_norm_sq'] = grad_norm_sq
         info['x_lie'] = x
         info['n_iter'] = n_iter
+        info['options'] = opt
         
         return x_sol, info
                           
     
-    def gauss_isotrp_meas_model(self, edgeList, sigma):
+    def gauss_isotrp_meas_model(self, edge_list:list[tuple[str,str]], sigma:float=0.):
         """Generate isotropic Gaussian corrupted measurements based on a list of edges
 
         Args:
-            edgeList (_type_): list of tuples of strings indicating edges
+            edge_list (_type_): list of tuples of strings indicating edges
             sigma (_type_): Noise level
         """
         if np.abs(sigma) < 1e-9:
@@ -323,7 +393,7 @@ class MatrixWeightedProblem:
         else:
             W = np.eye(3)/sigma**2
             
-        for edge in edgeList:
+        for edge in edge_list:
             # Get vertices
             v1Lbl, v2Lbl = edge
             v1 = self.G.Vp[v1Lbl]

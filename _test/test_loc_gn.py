@@ -5,7 +5,7 @@ import scipy.sparse.linalg as sla
 import numpy.linalg as la
 import spatialmath as sm
 # dev imports
-from mwcerts.stereo_problems import Localization, GaussNewtonOpts, Camera, stereo_meas_model
+from mwcerts.stereo_problems import Localization, Camera, stereo_meas_model
 import pytest
 
 def init_problem():
@@ -51,7 +51,9 @@ def test_gn_no_noise():
     x_init = 0.1*np.random.randn(3*(len(loc.var_list)-1))
     x_sol, info = loc.gauss_newton(x_init=None)
     x_gn = np.vstack([x_sol[var] for var in loc.var_list.keys()])
+    assert info['n_iter'] < info['options'].max_iter, "Gauss Newton did not converge"
     np.testing.assert_allclose(x_gn,x_gt,atol=1e-12,err_msg="Gauss Newton - No Noise")
+    
     del loc
     
 def test_gn_iso_noise():
@@ -63,11 +65,11 @@ def test_gn_iso_noise():
     sigma = 0.0005
     loc.gauss_isotrp_meas_model(edges,sigma)
     # Run GN - start at ground truth
-    opt = GaussNewtonOpts()
     x_init = loc.init_gauss_newton()
-    x_sol, info = loc.gauss_newton(opt, x_init=x_init)
+    x_sol, info = loc.gauss_newton(x_init=x_init)
     x_gn = np.vstack([x_sol[var] for var in loc.var_list.keys()])
-    # np.testing.assert_allclose(x_gn,x_gt,atol=1e-3,rtol=np.Inf,err_msg="Gauss Newton - Iso Noise")
+    assert info['n_iter'] < info['options'].max_iter, "Gauss Newton did not converge"
+    np.testing.assert_allclose(x_gn, x_gt, atol=0.005,rtol=np.Inf,err_msg="Gauss Newton - Iso Noise")
     
 def test_gn_stereo():
     """Noisy Gauss Newton Test
@@ -108,6 +110,7 @@ def test_gn_stereo():
     ax.set_title("Pixel Coordinates")
     plt.show()
     # Check measurements 
+    assert info['n_iter'] < info['options'].max_iter, "Gauss Newton did not converge"
     np.testing.assert_allclose(u_est,u_meas,atol=3*0.5,err_msg="Stereo meas horizontal")
     np.testing.assert_allclose(v_est,v_meas,atol=3*0.5,err_msg="Stereo meas vertical")
     np.testing.assert_allclose(d_est,d_meas,atol=3*np.sqrt(2)*0.5,err_msg="Stereo meas disparity")

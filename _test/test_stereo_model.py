@@ -21,12 +21,12 @@ def test_covariance():
     r_p = [np.zeros((3,1))]
     C = [np.eye(3)]
     # Map Point
-    r_m = [np.array([[0,0,3]]).T]
+    r_m = [np.array([[0,1,3]]).T]
     # Make graph
     loc = Localization(r_p,C,r_m)
     # Get Covariances by running model N times
     Sigma, Sigma_hat, Sigma_cam, Sigma_cam_hat, mu, X = \
-        get_covariances(loc , N, c,lin_about_gt=False)
+        get_covariances(loc , N, c,lin_about_gt=True)
     # Plot Ellipsoids
     plt.figure()
     ax = plt.axes(projection='3d')

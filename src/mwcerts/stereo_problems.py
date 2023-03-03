@@ -22,12 +22,11 @@ class Camera():
         camera.sigma_v = 0.5
 
 class Localization(MatrixWeightedProblem):
-    """Localization problem with map points known. 
-    It is assumed that there are no pose-to-pose measurements.
+    """Localization problem with map points known.
+     
     Poses: C_io - Rotation matrix from world to pose frame
            t_io_i  - Translation from world to pose frame in pose frame
     Map Points: p_io_o - Translation from world to map point in world frame
-    Measurements: y_ki_i - Translation from world  
 
     """
     def __init__(self, r_p_in0, C_p_0, r_m_in0):
@@ -47,6 +46,7 @@ class Localization(MatrixWeightedProblem):
         """
         Generate cost function matrix based on the edges in the edge graph
         """
+        self.Q = PolyMatrix()
         # Loop through edges in measurement graph and define cost matrix
         for v1 in self.G.E.keys():
             for v2 in self.G.E[v1].keys():
@@ -55,47 +55,86 @@ class Localization(MatrixWeightedProblem):
                     # Get measurement and weight
                     y = self.G.E[v1][v2].meas['trans']
                     W = self.G.E[v1][v2].weight['trans']
-                    # Define dummy poly matrix for cost element
-                    Q_e = PolyMatrix()
-                    # Homogenization variable
-                    w0 = 'w_0'
-                    # Define labels
-                    C1 = v1.label + '_C'
-                    t1 = v1.label + '_t'
-                    # Get Map point 
-                    p = v2.r_in0
-                    # Define matrix
-                    Q_e[C1, C1] = np.kron(p @ p.T, W)
-                    Q_e[C1, t1] = -np.kron(p , W) 
-                    Q_e[C1, w0] = -np.kron(p, W @ y) 
-                    Q_e[t1, t1] = W
-                    Q_e[t1, w0] = W @ y
-                    Q_e[w0, w0] = y.T @ W @ y   
-                    # Add to cost matrix
-                    self.Q += Q_e
+                    # Get cost element 
+                    Q_elem = self.get_p2m_cost_elem(v1,v2,y,W)
+                    
                 else: # Pose-To-Pose Measurement
-                    if "trans" in self.G.E[v1][v2].meas:
+                    if "transform" in self.G.E[v1][v2].meas:
+                        # Get measurement and scalar weight
+                        T_ji = self.G.E[v1][v2].meas['trans']
+                        W = self.G.E[v1][v2].weight['trans']
+                        # TODO Add cost with Transformation
+                    if 'trans' in self.G.E[v1][v2].meas:
+                        assert not "transform" in self.G.E[v1][v2].meas
                         # Get measurement and scalar weight
                         t_tild = self.G.E[v1][v2].meas['trans']
                         w = self.G.E[v1][v2].weight['trans']
-                        # Define dummy poly matrix for cost element
-                        Q_e = PolyMatrix()
-                        # Homogenization variable
-                        w0 = 'w_0'
-                        # Define labels 
-                        C1 = v1.label + '_C'
-                        t1 = v1.label + '_t0'
-                        t2 = v2.label + '_t0'
-                        # Define matrix
-                        Q_e[t1, t1] = -np.eye(3)*w
-                        Q_e[t2, t2] = np.eye(3)*w
-                        Q_e[w0, w0] = t_tild.T @ t_tild
-                        Q_e[C1, t1] = -np.kron(t_tild, np.eye(3))*w
-                        Q_e[C1, t2] = np.kron(t_tild, np.eye(3))*w
-                        Q_e[t1, t2] = -np.eye(3)*w
-                        # Add to cost matrix
-                        self.Q += Q_e
-                    
+                        # Get cost element 
+                        Q_elem = self.get_p2p_trans_cost_elem(v1,v2, t_tild, w)
+                # Add to total cost matrix
+                self.Q += Q_elem
+                           
+    def get_p2m_cost_elem(self,v_i : Vertex, v_j : MapVertex, y_ji_i, W_ij) -> PolyMatrix:
+        """Generate cost matrix element for a pose to map measurement
+
+        Args:
+            v1 (Vertex): pose vertex
+            v2 (MapVertex): map vertex
+            y (_type_): measurement of map vertex from pose vertex frame
+            W (_type_): Weight matrix
+
+        Returns:
+            PolyMatrix: A polynomial matrix representing the cost element
+        """
+        assert W_ij.shape == (3,3), "Weight is not a matrix"
+        # Define dummy poly matrix for cost element
+        Q_e = PolyMatrix()
+        # Homogenization variable
+        w0 = 'w_0'
+        # Define labels
+        C1 = v_i.label + '_C'
+        t1 = v_i.label + '_t'
+        # Get Map point 
+        p = v_j.r_in0
+        # Define matrix
+        Q_e[C1, C1] = np.kron(p @ p.T, W_ij)
+        Q_e[C1, t1] = -np.kron(p , W_ij) 
+        Q_e[C1, w0] = -np.kron(p, W_ij @ y_ji_i) 
+        Q_e[t1, t1] = W_ij
+        Q_e[t1, w0] = W_ij @ y_ji_i
+        Q_e[w0, w0] = y_ji_i.T @ W_ij @ y_ji_i   
+        return Q_e       
+    
+    def get_p2p_trans_cost_elem(self, v1 : Vertex, v2 : Vertex, t_ji_i, w_ij : float) -> PolyMatrix:
+        """Get pose to pose translation measurement cost element. 
+
+        Args:
+            v1 (Vertex): First pose vertex
+            v2 (Vertex): Second pose vertex
+            t_ji_i (_type_): measurement of second pose origin from first pose frame
+            w_ij (float): scalar weight
+
+        Returns:
+            PolyMatrix: _description_
+        """
+        # Define dummy poly matrix for cost element
+        Q_e = PolyMatrix()
+        # Homogenization variable
+        w0 = 'w_0'
+        # Define labels 
+        C1 = v1.label + '_C'
+        t1 = v1.label + '_t0'
+        t2 = v2.label + '_t0'
+        # Define matrix
+        Q_e[t1, t1] = np.eye(3)
+        Q_e[t2, t2] = np.eye(3)
+        Q_e[w0, w0] = (t_ji_i.T @ t_ji_i)
+        Q_e[C1, t1] = -np.kron(t_ji_i, np.eye(3))
+        Q_e[C1, t2] = np.kron(t_ji_i, np.eye(3))
+        Q_e[t1, t2] = -np.eye(3)
+        Q_e *= w_ij
+        return Q_e
+
     def generate_constraints(self):
         """
         Generate the constraint matrices for each variable
@@ -122,30 +161,9 @@ class Localization(MatrixWeightedProblem):
         A = PolyMatrix()
         A[w0,w0] = 1.
         self.constraints += [Constraint(A, 1., "Homog")]
-        
-    def init_gauss_newton(self, sigma=0.):
-        """Generate ground truth vector with gaussian noise in lie algebra.
-
-        Args:
-            sigma (float, optional): Standard Deviation for Gaussian Noise. Defaults to 0..
-
-        Returns:
-            numpy array : initialization vector
-        """
-        x_init = []
-        for var in self.var_list:
-            if not "w" in var:
-                label = var.split("_")[0]
-                v = self.G.Vp[label]
-                xi = Trans(C_ba=v.C_p0, r_ba_in_a=v.r_in0).vec()
-                if "t" in var:
-                    x_init += [ xi[:3,[0]] + sigma*np.random.randn(3,1) ]
-                elif "C" in var:
-                    x_init += [ xi[3:, [0]] + sigma*np.random.randn(3,1) ]
-        return np.vstack(x_init)
-        
-    def add_p2p_trans_meas(self, edge_list : list[tuple[str,str]], sigma : float):
-        """Add measurements to the graph corresponding to point to point translations 
+            
+    def add_p2p_meas(self, edge_list : list[tuple[str,str]], mtype : str="transform", sigma=0.0):
+        """Add measurements to the graph corresponding to point to point transformations 
         This also involves adding a new translation variable for each pose to properly 
         express the cost function as a quadratic.
         Args:
@@ -162,13 +180,28 @@ class Localization(MatrixWeightedProblem):
             # Add world frame variables to list
             self.add_world_frame_vars([v1Lbl,v2Lbl])
             # Define measurement and weight
-            meas = v1.C_p0 @ (v2.r_in0 - v1.r_in0) + sigma*np.random.randn(3,1)
-            if sigma > 0.:
-                weight = 1/sigma**2
-            else:
-                weight = 1
-            self.G.add_edge(v1,v2,meas,weight,'trans')
-            
+            if mtype == "trans": # Translation only measurement
+                meas = v1.C_p0 @ (v2.r_in0 - v1.r_in0) + sigma*np.random.randn(3,1)
+                if sigma > 0.:
+                    weight = 1/sigma**2
+                else:
+                    weight = 1
+                self.G.add_edge(v1,v2,meas,weight,'trans')
+            elif mtype == "rot":
+                # TODO add in rotation only measurement
+                pass
+            elif mtype == "transform": # Transformation measurement
+                assert sigma.shape[0] == 2, 'Transformation measurement requires two standard dev values (trans, rot)'
+                # Get world to pose transforms
+                T_i0 = Trans(C_ba=v1.C_p0, r_ba_in_a=v1.r_in0)
+                T_j0 = Trans(C_ba=v1.C_p0, r_ba_in_a=v1.r_in0)
+                T_ij = T_i0 @ T_j0.inverse()
+                # Add perturbation in the Lie Algebra
+                Sigma = np.block(np.eye(3)*sigma[0], np.eye(3)*sigma[1])
+                xi_err = Sigma @ np.random.randn(6,1)
+                meas = Trans(xi_ab=xi_err) @ T_ij
+                self.G.add_edge(v1,v2,meas,sigma,mtype)
+                       
     def add_world_frame_vars(self, var_list: list[str]):
         
         """This function adds new variables to the problem that represent 
@@ -200,7 +233,6 @@ class Localization(MatrixWeightedProblem):
                 A[t_i0_in_i,t_i0_in_i] = -np.eye(3)
                 self.constraints_r += [Constraint(A,0.,"trans_world_pose")]
             
-
 def stereo_meas_model(prb : MatrixWeightedProblem, edgeList : list, c : Camera, \
         lin_about_gt : bool=False):
     # Loop over edges in pose to measurement graph
@@ -259,7 +291,6 @@ def stereo_meas_model(prb : MatrixWeightedProblem, edgeList : list, c : Camera, 
     v_list = np.array(v_list)
     d_list = np.array(d_list)
     return u_list, v_list, d_list
-
 
 def pd_inv(a):
     n = a.shape[0]

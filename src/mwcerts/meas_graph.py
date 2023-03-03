@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+from pyvis.network import Network
+import numpy as np
+
 
 class Vertex:
     def __init__(self, label, r, C):
@@ -150,4 +153,45 @@ class MeasGraph:
         except:
             e = []
         return e
+    
+    def plot(self):
+        
+        net = Network(bgcolor="#222222", font_color="white", select_menu=True)
+        
+        # Nodes
+        cnt = 1
+        nodes = {}
+        for v in self.Vp.values():
+            nodes[v] = cnt
+            net.add_node(cnt, label=v.label, color='blue', shape="triangle")
+            cnt+=1
+        for v in self.Vm.values():
+            nodes[v] = cnt
+            net.add_node(cnt, label=v.label, color='purple', shape="star")
+            cnt+=1
+            
+        # Edges
+        for v1 in self.E.keys():
+            for v2 in self.E[v1].keys():
+                meas_norm = np.linalg.norm(self.E[v1][v2].meas['trans'])
+                weight_norm = np.linalg.norm(self.E[v1][v2].weight['trans'])
+                weight = meas_norm * weight_norm
+                net.add_edge(nodes[v1], nodes[v2], value=weight, color='black')
+
+        # Set physics options:
+        opts="""const options = {
+                    "physics": {
+                        "forceAtlas2Based": {
+                        "gravitationalConstant": -131,
+                        "centralGravity": 0,
+                        "springLength": 225
+                        },
+                        "minVelocity": 0.75,
+                        "solver": "forceAtlas2Based"
+                    }
+                    }"""
+        net.set_options(opts)
+        # publish to html       
+        #net.show_buttons()
+        net.show('net_graph.html')
         

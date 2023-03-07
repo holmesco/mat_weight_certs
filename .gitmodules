@@ -1,3 +1,6 @@
 [submodule "poly_matrix"]
 	path = src/poly_matrix
 	url = https://github.com/utiasASRL/poly_matrix.git
+[submodule "src/pylgmath"]
+	path = src/pylgmath
+	url = https://github.com/utiasASRL/pylgmath.git

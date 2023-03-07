@@ -21,7 +21,7 @@ class Constraint:
         
 class GaussNewtonOpts:
     def __init__(self):
-        self.tol_grad_norm_sq = 1e-10
+        self.tol_grad_norm_sq = 1e-12
         self.max_iter = 200
 
 class MatrixWeightedProblem:
@@ -85,10 +85,9 @@ class MatrixWeightedProblem:
                 if lbl[1] == 'C':
                     # Rotation - var = vec(C)
                     C = v.C_p0.copy()
-                    x_sol += [C.reshape((-1,1),order='F')]
+                    x_sol += [C.reshape((9,1),order='F')]
                 elif lbl[1] == "t":
-                    # Translation pose frame
-                    x_sol += [v.C_p0 @ v.r_in0]
+                    x_sol += [v.C_p0 @ v.r_in0 ]
                 elif lbl[1] == "t0":
                     # Translation world frame
                     x_sol += [v.r_in0]
@@ -191,7 +190,13 @@ class MatrixWeightedProblem:
                 ind += self.var_list[key]
         if x[ind] < 0:
               x = -x      
-        return x
+        x_vals = {}
+        ind = 0
+        for var,sz in self.var_list.items():
+            x_vals[var] = x[ind:ind+sz]
+            ind += sz
+
+        return x, x_vals
     
     def init_gauss_newton(self, sigma=0.):
         """Generate ground truth vector with gaussian noise in lie algebra.
@@ -209,10 +214,106 @@ class MatrixWeightedProblem:
                 v = self.G.Vp[label]
                 xi = Trans(C_ba=v.C_p0, r_ba_in_a=v.r_in0).vec()
                 if "t" in var and not "t0" in var:
-                    x_init += [ xi[:3,[0]] + sigma*np.random.randn(3,1) ]
+                    x_init += [ xi[:3,[0]] + sigma*np.random.randn(3,1)]
                 elif "C" in var:
                     x_init += [ xi[3:, [0]] + sigma*np.random.randn(3,1) ]
         return np.vstack(x_init)
+    
+    def gauss_newton_err(self, x, var_inds):
+        """Helper function for Gauss Newton Algorithm. Computes error, weighting,
+        and Jacobian based on the measurement factor graph.
+
+        Args:
+            x (numpy array): current variable state
+            var_inds (dict): mapping from variable names to position in the state 
+
+        Returns:
+            _type_: _description_
+        """
+        # number of variables
+        n_vars = len(var_inds)
+        # Init list of values in Jacobian and Weight Matrices
+        J_rows = np.array([])
+        J_cols = np.array([])
+        J_vals = np.array([])
+        W_rows = np.array([])
+        W_cols = np.array([])
+        W_vals = np.array([])
+        err_list = []
+        offs = 0
+        # Loop through edges in factor graph
+        for v1 in self.G.E.keys():
+            for v2 in self.G.E[v1].keys():
+                if isinstance(v2, MapVertex):
+                    # POSE-TO-VERTEX TRANSLATION
+                    # ERROR: y_ba_a - T_a0 * p_b0_0
+                    # variable indicies (addition of lists)
+                    inds = var_inds[v1.label+"_t"] + var_inds[v1.label+"_C"]
+                    # Get relevant variables
+                    xi = x[inds]
+                    y_ji_i = self.G.E[v1][v2].meas['trans'] 
+                    T_i0 = Trans(xi_ab=xi)
+                    p_j0_0 = np.vstack((v2.r_in0,[[1]]))
+                    # Construct error
+                    p_ji_i = T_i0 @ p_j0_0
+                    err = y_ji_i - p_ji_i[0:3,[0]]
+                    # Construct Jacobian and get weight
+                    J_ij = -circ_dot(p_ji_i)
+                    W_ij = self.G.E[v1][v2].weight['trans'] 
+                else: 
+                    # POSE-TO-POSE Tranformation - This error is evaluated in the 
+                    # Lie Algebra, based on the relative transformation
+                    # variable indicies (addition of lists)
+                    inds = var_inds[v1.label+"_t"] + var_inds[v1.label+"_C"] + \
+                                var_inds[v2.label+"_t"] + var_inds[v2.label+"_C"]
+                    # Get relevant variables
+                    xi = x[inds]
+                    xi_i = xi[:6]
+                    xi_j = xi[6:]
+                    # Get measured transformation and weights
+                    meas = self.G.E[v1][v2].meas
+                    weight = self.G.E[v1][v2].weight
+                    if "transform" in meas:
+                        T_ij_meas = meas['transform']
+                        W_ij = weight['transform']
+                        T_i0 = Trans(xi_ab=xi_i).matrix()
+                        T_j0 = Trans(xi_ab=xi_j).matrix()
+                        err = T_ij_meas @ T_j0 - T_i0
+                        # TODO Fix this
+                        J_ij = D @ np.hstack((-circ_dot(T_i0 @ h),T_ij_meas@circ_dot(T_j0 @ h)))
+                    elif "trans" in meas:
+                        t_ji_i = np.vstack((meas['trans'],[[1]]))
+                        W_t = weight['trans']*np.eye(3)
+                        assert W_t.shape == (3,3), "Weight matrix has incorrect shape"                          
+                        W_ij = W_t
+                        # Construct error
+                        D = np.hstack((np.eye(3), np.zeros((3,1))))
+                        h = np.array([[0,0,0,1]]).T   
+                        T_0i = Trans(xi_ab=xi_i).inverse().matrix()
+                        T_0j = Trans(xi_ab=xi_j).inverse().matrix()       
+                        err = D @ (T_0i @ t_ji_i - T_0j @ h)
+                        # Construct Jacobian
+                        J_ij = D @ np.hstack((-T_0i @ circ_dot(t_ji_i), T_0j @ circ_dot(h)))
+                        
+                # Store sparse values
+                nz = np.nonzero(J_ij)
+                J_rows=np.append(J_rows, offs+nz[0])
+                J_cols=np.append(J_cols, [inds[i] for i in nz[1]])
+                J_vals=np.append(J_vals, J_ij[nz])
+                nz = np.nonzero(W_ij)
+                W_rows=np.append(W_rows, offs+nz[0])
+                W_cols=np.append(W_cols, offs+nz[1])
+                W_vals=np.append(W_vals, W_ij[nz])                    
+                # update error array and indexing offset
+                err_list += [err]
+                offs += err.shape[0]
+        # Assemble error
+        err_vec = np.vstack(err_list)
+        # Construct sparse matrices
+        J = sp.coo_matrix((J_vals, (J_rows, J_cols)), shape=(len(err_vec),n_vars*3))
+        W = sp.coo_matrix((W_vals, (W_rows, W_cols)), shape=(len(err_vec),len(err_vec)))
+        return err_vec, J, W
+            
     
     def gauss_newton(self, opt : GaussNewtonOpts=GaussNewtonOpts(), x_init=None):
         """ Run Gauss-Newton algorithm for the localization problem
@@ -232,8 +333,7 @@ class MatrixWeightedProblem:
             # Only assign variables for rotations or translations
             if (not "w" in var) and ("t0" not in var):
                 var_inds[var]=list(range(n_vars*3, (n_vars+1)*3))
-                n_vars += 1
-                     
+                n_vars += 1     
         # Init GN: variable is stored in the "Lie algebra" form according to
         # the vertex list vert_list. Variable is expressed in the world frame
         #    x(i) = xi_i = vec(T_io)
@@ -249,93 +349,8 @@ class MatrixWeightedProblem:
         # Main loop
         print("| Iteration | Grd Nrm Sq |   Cost    |")
         while grad_norm_sq > opt.tol_grad_norm_sq and n_iter < opt.max_iter:
-            # Init list of values in Jacobian and Weight Matrices
-            J_rows = np.array([])
-            J_cols = np.array([])
-            J_vals = np.array([])
-            W_rows = np.array([])
-            W_cols = np.array([])
-            W_vals = np.array([])
-            err_list = []
-            offs = 0
-            # Loop through edges in factor graph
-            for v1 in self.G.E.keys():
-                for v2 in self.G.E[v1].keys():
-                    if isinstance(v2, MapVertex):
-                        # POSE-TO-VERTEX TRANSLATION
-                        # ERROR: y_ba_a - T_a0 * p_b0_0
-                        # variable indicies (addition of lists)
-                        inds = var_inds[v1.label+"_t"] + var_inds[v1.label+"_C"]
-                        # Get relevant variables
-                        xi = x[inds]
-                        y_ba_a = self.G.E[v1][v2].meas['trans'] 
-                        T_a0 = Trans(xi_ab=xi)
-                        p_b0_0 = np.vstack((v2.r_in0,[[1]]))
-                        # Construct error
-                        p_ba_a = T_a0 @ p_b0_0
-                        err = y_ba_a - p_ba_a[0:3,[0]]
-                        # Construct Jacobian and get weight
-                        J_ij = -circ_dot(p_ba_a)
-                        W_ij = self.G.E[v1][v2].weight['trans'] 
-                    else: 
-                        # POSE-TO-POSE Tranformation - This error is evaluated in the 
-                        # Lie Algebra, based on the relative transformation
-                        # variable indicies (addition of lists)
-                        inds = var_inds[v1.label+"_t"] + var_inds[v1.label+"_C"] + \
-                                    var_inds[v2.label+"_t"] + var_inds[v2.label+"_C"]
-                        # Get relevant variables
-                        xi = x[inds]
-                        xi_i = xi[:6]
-                        xi_j = xi[6:]
-                        T_i0 = Trans(xi_ab=xi_i)
-                        T_j0 = Trans(xi_ab=xi_j)
-                        # Get measured transformation and weights
-                        meas = self.G.E[v1][v2].meas
-                        weight = self.G.E[v1][v2].weight
-                        if "transform" in meas:
-                            T_ji_meas = meas['transform']
-                            W_ij = weight['transform']
-                        else:
-                            r_ji_i = meas['trans']
-                            W_t = weight['trans']*np.eye(3)
-                            if "rot" in meas:
-                                C_ji = meas['rot']
-                                W_r = weight['rot']*np.eye(3)
-                            else:
-                                # if not defined, rotation weight should be zero
-                                C_ji = np.eye(3)
-                                W_r = np.zeros((3,3))
-                            assert W_r.shape == (3,3), "Weight matrix has incorrect shape"
-                            assert W_t.shape == (3,3), "Weight matrix has incorrect shape"
-                            W_ij = la.block_diag(W_t,W_r)
-                            T_ji_meas = Trans(C_ba=C_ji, r_ba_in_a=r_ji_i)
-                        # Construct error (Lie Algebra)
-                        T_ij = T_i0 @ T_j0.inverse()
-                        T_err = T_ji_meas @ T_ij
-                        err = T_err.vec()
-                        # Construct Jacobian and get scalar weight
-                        J_ij = np.hstack((T_ij.adjoint(), -np.eye(6)))
-                        
-                    # Store sparse values
-                    nz = np.nonzero(J_ij)
-                    J_rows=np.append(J_rows, offs+nz[0])
-                    J_cols=np.append(J_cols, [inds[i] for i in nz[1]])
-                    J_vals=np.append(J_vals, J_ij[nz])
-                    nz = np.nonzero(W_ij)
-                    W_rows=np.append(W_rows, offs+nz[0])
-                    W_cols=np.append(W_cols, offs+nz[1])
-                    W_vals=np.append(W_vals, W_ij[nz])                    
-                    # update error array and indexing offset
-                    err_list += [err]
-                    offs += err.shape[0]
-            # Assemble error
-            err_vec = np.vstack(err_list)
-            # Construct sparse matrices
-            J = sp.coo_matrix((J_vals, (J_rows, J_cols)), shape=(len(err_vec),n_vars*3))
-            W = sp.coo_matrix((W_vals, (W_rows, W_cols)), shape=(len(err_vec),len(err_vec)))
-            # Rescale Problem to avoid numerical issues
-            # w_scl = sp.linalg.norm(W)
-            # W /= w_scl
+            # Compute error, jacobian and weight
+            err_vec, J, W = self.gauss_newton_err(x, var_inds)
             # Compute gradiant
             Grad = - J.T @ W @ err_vec
             grad_norm_sq = np.linalg.norm(Grad)**2
@@ -343,6 +358,7 @@ class MatrixWeightedProblem:
             # Compute and apply update
             del_x = sp.linalg.spsolve(Hessian, Grad)
             del_x=np.expand_dims(del_x,1)
+            # Perform "retraction" onto SE(3) manifold 
             for v1 in self.G.E.keys():
                 # varialble indicies (addition of lists)
                 inds = var_inds[v1.label+"_t"] + var_inds[v1.label+"_C"]
@@ -356,7 +372,9 @@ class MatrixWeightedProblem:
             n_iter += 1
             cost = err_vec.T @ W @ err_vec 
             print(f"| {n_iter:9d} | ",f"{grad_norm_sq:9.4e} | ",f"{cost[0,0]:9.4e} |")
-            
+        # Final cost (recompute error post delta)
+        err_vec, J, W = self.gauss_newton_err(x, var_inds)
+        cost = err_vec.T @ W @ err_vec
         # convert solution to expected format based on variable list
         x_sol = {}
         for var in self.var_list.keys():
@@ -365,11 +383,11 @@ class MatrixWeightedProblem:
             elif "t" in var:
                 label = var.split("_")[0]
                 inds = var_inds[label+"_t"] + var_inds[label+"_C"]
-                T_ba = Trans(xi_ab=x[inds])
-                x_sol[label+'_C'] = np.reshape(T_ba.C_ba(),(9,1),order='F')
-                x_sol[label+'_t'] = T_ba.C_ba() @ T_ba.r_ba_ina()
-                x_sol[label+'_t0'] = T_ba.r_ba_ina()
-                x_sol[label+'_T_io'] = T_ba.matrix()
+                T_i0 = Trans(xi_ab=x[inds])
+                x_sol[label+'_C'] = np.reshape(T_i0.C_ba(),(9,1),order='F')
+                x_sol[label+'_t'] = T_i0.C_ba() @ T_i0.r_ba_ina()
+                x_sol[label+'_t0'] = T_i0.r_ba_ina()
+                x_sol[label+'_T_io'] = T_i0.matrix()
         # Solution info
         info = {}
         info['cost'] = cost
@@ -380,7 +398,6 @@ class MatrixWeightedProblem:
         
         return x_sol, info
                           
-    
     def gauss_isotrp_meas_model(self, edge_list:list[tuple[str,str]], sigma:float=0.):
         """Generate isotropic Gaussian corrupted measurements based on a list of edges
 
@@ -469,6 +486,8 @@ def plot_ellipsoid(bias, cov, ax=None, color='b',stds=1,label : str=None):
     return surf
 
 def circ_dot(homog_vec):
-    return np.hstack( (homog_vec[3,[0]]*np.eye(3) , -skew(homog_vec[0:3,0])) )    
+    top = np.hstack( (homog_vec[3,[0]]*np.eye(3) , -skew(homog_vec[0:3,0])) )
+    bottom = np.zeros((1,6))
+    return  np.vstack((top, bottom))
 def skew(vec): 
     return np.array([[0, -vec[2], vec[1]],[vec[2], 0, -vec[0]],[-vec[1], vec[0], 0]])           

@@ -128,9 +128,9 @@ class Localization(MatrixWeightedProblem):
         # Define matrix
         Q_e[t1, t1] = np.eye(3)
         Q_e[t2, t2] = np.eye(3)
-        Q_e[w0, w0] = (t_ji_i.T @ t_ji_i)
-        Q_e[C1, t1] = -np.kron(t_ji_i, np.eye(3))
-        Q_e[C1, t2] = np.kron(t_ji_i, np.eye(3))
+        Q_e[w0, w0] = t_ji_i.T @ t_ji_i
+        Q_e[C1, t1] = np.kron(np.eye(3),t_ji_i)
+        Q_e[C1, t2] = -np.kron(np.eye(3),t_ji_i)
         Q_e[t1, t2] = -np.eye(3)
         Q_e *= w_ij
         return Q_e

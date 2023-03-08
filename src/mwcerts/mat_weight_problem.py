@@ -134,7 +134,7 @@ class MatrixWeightedProblem:
         
         print("Constraints Validated!")
     
-    def solve_primal_sdp(self, use_redun : bool=False, vars=None):
+    def solve_primal_sdp(self, use_redun : bool=False, vars=None, verbose=False):
         """
         Solve the relaxed SDP for the original QCQP problem
 
@@ -156,7 +156,8 @@ class MatrixWeightedProblem:
             for c in self.constraints]
         #   Redundant Affine:
         if use_redun:
-            print("****  Adding redundant constraints  ****")
+            if verbose:
+                print("****  Adding redundant constraints  ****")
             if not len(self.constraints_r) > 0:
                 warnings.warn("Redundant constraints have not been generated.")
             constraints += [cp.trace(c.A.get_matrix(vars) @ X) == c.b \
@@ -167,7 +168,7 @@ class MatrixWeightedProblem:
         Q = Q / q_scale
         # Run CVX
         cprob = cp.Problem(cp.Minimize(cp.trace(Q @ X)), constraints)
-        cprob.solve(solver=self.SDP_solvr,verbose=True)
+        cprob.solve(solver=self.SDP_solvr,verbose=verbose)
         
         return X,cprob
         
@@ -312,10 +313,9 @@ class MatrixWeightedProblem:
         # Construct sparse matrices
         J = sp.coo_matrix((J_vals, (J_rows, J_cols)), shape=(len(err_vec),n_vars*3))
         W = sp.coo_matrix((W_vals, (W_rows, W_cols)), shape=(len(err_vec),len(err_vec)))
-        return err_vec, J, W
-            
+        return err_vec, J, W        
     
-    def gauss_newton(self, opt : GaussNewtonOpts=GaussNewtonOpts(), x_init=None):
+    def gauss_newton(self, opt : GaussNewtonOpts=GaussNewtonOpts(), x_init=None, verbose=False):
         """ Run Gauss-Newton algorithm for the localization problem
 
         Args:
@@ -347,7 +347,8 @@ class MatrixWeightedProblem:
         grad_norm_sq = np.Inf
         n_iter = 0
         # Main loop
-        print("| Iteration | Grd Nrm Sq |   Cost    |")
+        if verbose:
+            print("| Iteration | Grd Nrm Sq |   Cost    |")
         while grad_norm_sq > opt.tol_grad_norm_sq and n_iter < opt.max_iter:
             # Compute error, jacobian and weight
             err_vec, J, W = self.gauss_newton_err(x, var_inds)
@@ -371,7 +372,8 @@ class MatrixWeightedProblem:
             # Update and status
             n_iter += 1
             cost = err_vec.T @ W @ err_vec 
-            print(f"| {n_iter:9d} | ",f"{grad_norm_sq:9.4e} | ",f"{cost[0,0]:9.4e} |")
+            if verbose:
+                print(f"| {n_iter:9d} | ",f"{grad_norm_sq:9.4e} | ",f"{cost[0,0]:9.4e} |")
         # Final cost (recompute error post delta)
         err_vec, J, W = self.gauss_newton_err(x, var_inds)
         cost = err_vec.T @ W @ err_vec

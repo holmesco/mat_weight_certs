@@ -10,6 +10,7 @@ from mwcerts.stereo_problems import Localization, Camera, stereo_meas_model
 from poly_matrix.poly_matrix import PolyMatrix
 from run_test import run_loc_test
 import argparse
+from utils.definitions import OUTPUT
 
 
    
@@ -83,7 +84,7 @@ if __name__ == "__main__":
     args = par.parse_args()
     # Create results Folder
     if args.save_results:
-        results = os.path.dirname(__file__) + '/LocStereoResults/loc_ster_p2p'
+        results = OUTPUT + '/LocStereoResults/loc_ster_p2p'
         if not args.use_redun:
             results += '/'
         else:

@@ -18,7 +18,6 @@ dependencies:
     - mosek
     - pandas
     - pyvis
-    
 
     # Testing & linting
     - pytest=7.1
@@ -29,4 +28,5 @@ dependencies:
         # - <some package only available on PyPI>
         - -e .  # Build local source folder
         - spatialmath-python
+        - progress
         #- asrl-pylgmath --> working on local version.

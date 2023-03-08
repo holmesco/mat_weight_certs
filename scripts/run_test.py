@@ -19,7 +19,6 @@ def run_loc_test(loc : Localization, results : str, use_redun : bool=False):
     # Generate cost matrix
     loc.generate_cost()
     Q = loc.Q.get_matrix(variables=loc.var_list)
-    Q = Q / sla.norm(Q)
     # Show Cost function
     loc.Q.matshow(loc.var_list)
     if not results is None:

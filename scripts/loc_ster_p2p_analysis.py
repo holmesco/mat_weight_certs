@@ -9,6 +9,8 @@ import os
 from datetime import datetime
 from mwcerts.stereo_problems import Localization, Camera, stereo_meas_model
 from progress.bar import ChargingBar
+from utils.definitions import OUTPUT
+
 
 
 #  ***** PARAMETERS ******
@@ -124,7 +126,7 @@ bar.finish()
 # Create Dataframe
 df = pd.DataFrame(df_rows)
 # Save to CSV
-csv_file = os.path.dirname(__file__) + '/LocStereoResults/loc_ster_p2p'
+csv_file = OUTPUT + '/LocStereoResults/loc_ster_p2p'
 now = datetime.now()
 datestr = f"-{now.year}-{now.month}-{now.day}-T{now.hour}-{now.minute}"
 csv_file += datestr
